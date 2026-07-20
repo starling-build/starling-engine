@@ -6,8 +6,21 @@ DRM/KMS embedder and the Swift bridge. All Swift code — the framework port, th
 shell, the apps — lives in the sibling repo **starling-desktop**, which consumes
 this repo's build artifacts.
 
-Imported as a fresh snapshot (no history) from `sudison/flutter` branch
-`final-branch` @ `b97e6fcf4bf`.
+## History
+
+Two commits, deliberately:
+
+1. **Import upstream Flutter 3.38.6** — a pristine snapshot of
+   `flutter/flutter` @ `8b87286`, the commit Starling forked from.
+2. **Starling engine changes** — everything Starling adds, as one reviewable
+   diff (203 files: the `linux_drm` embedder, the Swift bridge, build wiring,
+   port tooling).
+
+So `git diff HEAD~1 HEAD` is exactly the Starling delta, and rebasing onto a
+newer upstream has a defined base to compare against.
+
+(`.github/workflows` is omitted from both: Google CI that cannot run here, and
+pushing workflow files needs a token scope this repo's automation lacks.)
 
 ## What Starling added / owns
 
