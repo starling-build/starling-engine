@@ -457,7 +457,16 @@ shared_library("flutter_engine_library") {
     ldflags += [ "-Wl,--version-script=" + rebase_path("embedder_exports.lst") ]
   }
 
-  deps = [ ":embedder" ]
+  deps = [
+    ":embedder",
+    "//flutter/lib/ui/swift:swift_bridge_sources",
+  ]
+
+  if (is_linux) {
+    deps += [
+      "//flutter/shell/platform/linux_drm:flutter_linux_drm_sources",
+    ]
+  }
 
   public_configs = [ "//flutter:config" ]
 }

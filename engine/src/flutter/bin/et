@@ -37,7 +37,7 @@ case "$(uname -s)" in
 esac
 
 case "$(uname -m)" in
-  arm64)
+  arm64 | aarch64)
     CPU="arm64"
     ;;
   x86_64)

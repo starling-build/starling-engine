@@ -39,8 +39,3 @@ SCRIPT_DIR=$(follow_links "$(dirname -- "${BASH_SOURCE[0]}")")
 SRC_DIR="$(cd "$SCRIPT_DIR/../.."; pwd -P)"
 DART_BIN=$(dart_bin "$SRC_DIR")
 DART="${DART_BIN}/dart"
-
-cd "$SCRIPT_DIR"
-"$DART" \
-  bin/format.dart \
-  "$@"

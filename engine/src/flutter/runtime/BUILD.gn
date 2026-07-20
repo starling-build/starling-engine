@@ -81,6 +81,8 @@ source_set("runtime") {
     "ptrace_check.h",
     "runtime_controller.cc",
     "runtime_controller.h",
+    "runtime_controller_interface.cc",
+    "runtime_controller_interface.h",
     "runtime_delegate.cc",
     "runtime_delegate.h",
     "service_protocol.cc",

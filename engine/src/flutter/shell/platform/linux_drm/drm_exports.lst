@@ -1,0 +1,11 @@
+{
+  global:
+    fl_drm_view_*;
+    FlutterEngine*;
+    FlutterEngineSend*;
+    FlutterEngineGetCurrentTime;
+    FlutterEngineRunTask;
+    FlutterEngineShutdown;
+  local:
+    *;
+};

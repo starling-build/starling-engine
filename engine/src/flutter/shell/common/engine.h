@@ -23,6 +23,7 @@
 #include "flutter/lib/ui/window/viewport_metrics.h"
 #include "flutter/runtime/dart_vm.h"
 #include "flutter/runtime/runtime_controller.h"
+#include "flutter/runtime/runtime_controller_interface.h"
 #include "flutter/runtime/runtime_delegate.h"
 #include "flutter/shell/common/animator.h"
 #include "flutter/shell/common/pointer_data_dispatcher.h"
@@ -358,8 +359,9 @@ class Engine final : public RuntimeDelegate, PointerDataDispatcher::Delegate {
 
   //----------------------------------------------------------------------------
   /// @brief      Creates an instance of the engine with a supplied
-  ///             `RuntimeController`.  Use the other constructor except for
-  ///             tests.
+  ///             `RuntimeControllerInterface`.  This constructor accepts any
+  ///             runtime controller implementation (e.g., RuntimeController for
+  ///             Dart, SwiftRuntimeController for Swift, or mocks for tests).
   ///
   Engine(Delegate& delegate,
          const PointerDataDispatcherMaker& dispatcher_maker,
@@ -370,7 +372,7 @@ class Engine final : public RuntimeDelegate, PointerDataDispatcher::Delegate {
          std::unique_ptr<Animator> animator,
          const fml::WeakPtr<IOManager>& io_manager,
          const std::shared_ptr<FontCollection>& font_collection,
-         std::unique_ptr<RuntimeController> runtime_controller,
+         std::unique_ptr<RuntimeControllerInterface> runtime_controller,
          const std::shared_ptr<fml::SyncSwitch>& gpu_disabled_switch);
 
   //----------------------------------------------------------------------------
@@ -1005,8 +1007,14 @@ class Engine final : public RuntimeDelegate, PointerDataDispatcher::Delegate {
   //--------------------------------------------------------------------------
   /// @brief      Accessor for the RuntimeController.
   ///
+  /// @note       This performs a static_cast from RuntimeControllerInterface
+  ///             to RuntimeController. Only use this when you need access to
+  ///             Dart-specific RuntimeController methods (e.g. in tests).
+  ///             For interface methods, use the runtime_controller_ member
+  ///             directly within the Engine.
+  ///
   const RuntimeController* GetRuntimeController() const {
-    return runtime_controller_.get();
+    return static_cast<const RuntimeController*>(runtime_controller_.get());
   }
 
   const std::weak_ptr<VsyncWaiter> GetVsyncWaiter() const;
@@ -1093,7 +1101,7 @@ class Engine final : public RuntimeDelegate, PointerDataDispatcher::Delegate {
   Engine::Delegate& delegate_;
   const Settings settings_;
   std::unique_ptr<Animator> animator_;
-  std::unique_ptr<RuntimeController> runtime_controller_;
+  std::unique_ptr<RuntimeControllerInterface> runtime_controller_;
 
   // The pointer_data_dispatcher_ depends on animator_ and runtime_controller_.
   // So it should be defined after them to ensure that pointer_data_dispatcher_

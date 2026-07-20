@@ -1,0 +1,5 @@
+# Symbols exported by the blue_screen_demo executable for the
+# libswift_bridge.dylib shared library to resolve at load time.
+# SwiftBridgeEngineRegistry symbols (statics live in the executable,
+# the dylib resolves them via -undefined dynamic_lookup).
+__ZN7flutter12swift_bridge25SwiftBridgeEngineRegistry*

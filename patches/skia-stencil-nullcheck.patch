@@ -1,0 +1,66 @@
+Skia: defensive null-check for missing stencil attachment in GrRenderTarget::numStencilBits
+
+Under the Flutter linux_drm shell on AMD/Mesa, a draw op with
+isStencilEnabled() can target an offscreen FBO that was created without
+a stencil attachment (e.g. a saveLayer for BoxShadow blurRadius > 0 or
+BackdropFilter, composited above an external DMA-BUF texture). In debug
+Skia builds an SkASSERT in GrGLGpu::flushGLState catches this; in release
+builds the assertion is compiled out and numStencilBits() null-derefs
+getStencilAttachment(), crashing inside libflutter_engine.so when
+EmbedderExternalTextureGL::ResolveTextureSkia flushes the pending queue.
+
+Two changes:
+
+  1. GrRenderTarget::numStencilBits returns 0 (instead of crashing) when
+     no stencil attachment is bound.
+  2. GrGLGpu::flushGLState skips stencil configuration if no attachment
+     is bound, so downstream stencil ops become no-ops on the
+     stencil-less FBO rather than executing with bogus settings.
+
+This prevents the crash. Visual effects that depend on stencil-based
+clipping inside the affected saveLayer may be missing, but BoxShadow
+blur itself does not require stencil.
+
+Apply with: patch -p1 -d engine/src < patches/skia-stencil-nullcheck.patch
+
+--- a/flutter/third_party/skia/src/gpu/ganesh/GrRenderTarget.cpp
++++ b/flutter/third_party/skia/src/gpu/ganesh/GrRenderTarget.cpp
+@@ -62,5 +62,13 @@
+ }
+
+ int GrRenderTarget::numStencilBits(bool useMSAASurface) const {
+-    return GrBackendFormatStencilBits(this->getStencilAttachment(useMSAASurface)->backendFormat());
++    // Defensive: in release builds the original code crashed when a draw op
++    // had isStencilEnabled() but the render target lacked a stencil
++    // attachment (an SkASSERT in GrGLGpu::flushGLState caught it in debug
++    // builds only). Returning 0 lets the caller proceed; downstream stencil
++    // ops become no-ops on the stencil-less FBO. Surfaces under the Flutter
++    // linux_drm shell hit this path when a saveLayer/blur (e.g. BoxShadow
++    // blurRadius>0) composites above an external DMA-BUF texture.
++    auto* sa = this->getStencilAttachment(useMSAASurface);
++    return sa ? GrBackendFormatStencilBits(sa->backendFormat()) : 0;
+ }
+--- a/flutter/third_party/skia/src/gpu/ganesh/gl/GrGLGpu.cpp
++++ b/flutter/third_party/skia/src/gpu/ganesh/gl/GrGLGpu.cpp
+@@ -2115,10 +2115,17 @@
+     GrGLRenderTarget* glRT = static_cast<GrGLRenderTarget*>(renderTarget);
+     GrStencilSettings stencil;
+     if (programInfo.isStencilEnabled()) {
+-        SkASSERT(glRT->getStencilAttachment(useMultisampleFBO));
+-        stencil.reset(*programInfo.userStencilSettings(),
+-                      programInfo.pipeline().hasStencilClip(),
+-                      glRT->numStencilBits(useMultisampleFBO));
++        // Skip stencil configuration entirely if no attachment is bound —
++        // the SkASSERT below catches this in debug builds, but release
++        // builds previously crashed in numStencilBits's null deref. Seen
++        // under the linux_drm shell when a saveLayer/blur (BoxShadow,
++        // BackdropFilter) targets an FBO whose stencil attachment was
++        // never allocated.
++        if (glRT->getStencilAttachment(useMultisampleFBO)) {
++            stencil.reset(*programInfo.userStencilSettings(),
++                          programInfo.pipeline().hasStencilClip(),
++                          glRT->numStencilBits(useMultisampleFBO));
++        }
+     }
+     this->flushStencil(stencil, programInfo.origin());
+     this->flushScissorTest(GrScissorTest(programInfo.pipeline().isScissorTestEnabled()));

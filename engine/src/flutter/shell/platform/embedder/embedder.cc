@@ -50,6 +50,8 @@ extern const intptr_t kPlatformStrongDillSize;
 #include "flutter/fml/message_loop.h"
 #include "flutter/fml/paths.h"
 #include "flutter/fml/trace_event.h"
+#include "flutter/lib/ui/swift/include/swift_runtime_controller.h"
+#include "flutter/runtime/runtime_controller_interface.h"
 #include "flutter/shell/common/rasterizer.h"
 #include "flutter/shell/common/switches.h"
 #include "flutter/shell/platform/embedder/embedder.h"
@@ -2497,6 +2499,366 @@ FlutterEngineResult FlutterEngineRunInitialized(
 }
 
 FLUTTER_EXPORT
+FlutterEngineResult FlutterEngineInitializeSwift(
+    size_t version,
+    const FlutterRendererConfig* config,
+    const FlutterProjectArgs* args,
+    void* user_data,
+    FlutterRuntimeController runtime_controller,
+    FLUTTER_API_SYMBOL(FlutterEngine)* engine_out) {
+  // Step 0: Validate arguments.
+  if (version != FLUTTER_ENGINE_VERSION) {
+    return LOG_EMBEDDER_ERROR(
+        kInvalidLibraryVersion,
+        "Flutter embedder version mismatch. There has been a breaking change. "
+        "Please consult the changelog and update the embedder.");
+  }
+
+  if (engine_out == nullptr) {
+    return LOG_EMBEDDER_ERROR(kInvalidArguments,
+                              "The engine out parameter was missing.");
+  }
+
+  if (args == nullptr) {
+    return LOG_EMBEDDER_ERROR(kInvalidArguments,
+                              "The Flutter project arguments were missing.");
+  }
+
+  if (runtime_controller == nullptr) {
+    return LOG_EMBEDDER_ERROR(kInvalidArguments,
+                              "The runtime controller was missing.");
+  }
+
+  if (!IsRendererValid(config)) {
+    return LOG_EMBEDDER_ERROR(kInvalidArguments,
+                              "The renderer configuration was invalid.");
+  }
+
+  std::string icu_data_path;
+  if (SAFE_ACCESS(args, icu_data_path, nullptr) != nullptr) {
+    icu_data_path = SAFE_ACCESS(args, icu_data_path, nullptr);
+  }
+
+  fml::CommandLine command_line;
+  if (SAFE_ACCESS(args, command_line_argc, 0) != 0 &&
+      SAFE_ACCESS(args, command_line_argv, nullptr) != nullptr) {
+    command_line = fml::CommandLineFromArgcArgv(
+        SAFE_ACCESS(args, command_line_argc, 0),
+        SAFE_ACCESS(args, command_line_argv, nullptr));
+  }
+
+  flutter::Settings settings = flutter::SettingsFromCommandLine(command_line);
+
+  settings.icu_data_path = icu_data_path;
+  if (SAFE_ACCESS(args, assets_path, nullptr) != nullptr) {
+    settings.assets_path = args->assets_path;
+  }
+
+  // Default to Impeller for Swift mode, but allow the embedder to override
+  // via command-line flags (e.g. --enable-impeller=false for software renderer).
+  if (!command_line.HasOption("enable-impeller")) {
+    settings.enable_impeller = true;
+  }
+
+  // Wire up log callback.
+  if (SAFE_ACCESS(args, log_message_callback, nullptr) != nullptr) {
+    FlutterLogMessageCallback callback =
+        SAFE_ACCESS(args, log_message_callback, nullptr);
+    settings.log_message_callback = [callback, user_data](
+                                        const std::string& tag,
+                                        const std::string& message) {
+      callback(tag.c_str(), message.c_str(), user_data);
+    };
+  } else {
+    settings.log_message_callback = [](const std::string& tag,
+                                       const std::string& message) {
+      if (!tag.empty()) {
+        std::cout << tag << ": ";
+      }
+      std::cout << message << std::endl;
+    };
+  }
+
+  if (SAFE_ACCESS(args, log_tag, nullptr) != nullptr) {
+    settings.log_tag = SAFE_ACCESS(args, log_tag, nullptr);
+  }
+
+  // Semantics callback.
+  flutter::PlatformViewEmbedder::UpdateSemanticsCallback
+      update_semantics_callback =
+          CreateEmbedderSemanticsUpdateCallback(args, user_data);
+
+  // Platform message callback.
+  flutter::PlatformViewEmbedder::PlatformMessageResponseCallback
+      platform_message_response_callback = nullptr;
+  if (SAFE_ACCESS(args, platform_message_callback, nullptr) != nullptr) {
+    platform_message_response_callback =
+        [ptr = args->platform_message_callback,
+         user_data](std::unique_ptr<flutter::PlatformMessage> message) {
+          auto handle = new FlutterPlatformMessageResponseHandle();
+          const FlutterPlatformMessage incoming_message = {
+              sizeof(FlutterPlatformMessage),  // struct_size
+              message->channel().c_str(),      // channel
+              message->data().GetMapping(),    // message
+              message->data().GetSize(),       // message_size
+              handle,                          // response_handle
+          };
+          handle->message = std::move(message);
+          return ptr(&incoming_message, user_data);
+        };
+  }
+
+  // Vsync callback.
+  flutter::VsyncWaiterEmbedder::VsyncCallback vsync_callback = nullptr;
+  if (SAFE_ACCESS(args, vsync_callback, nullptr) != nullptr) {
+    vsync_callback = [ptr = args->vsync_callback, user_data](intptr_t baton) {
+      return ptr(user_data, baton);
+    };
+  }
+
+  // On pre-engine restart callback.
+  flutter::PlatformViewEmbedder::OnPreEngineRestartCallback
+      on_pre_engine_restart_callback = nullptr;
+  if (SAFE_ACCESS(args, on_pre_engine_restart_callback, nullptr) != nullptr) {
+    on_pre_engine_restart_callback = [ptr =
+                                          args->on_pre_engine_restart_callback,
+                                      user_data]() { return ptr(user_data); };
+  }
+
+  // Channel update callback.
+  flutter::PlatformViewEmbedder::ChanneUpdateCallback channel_update_callback =
+      nullptr;
+  if (SAFE_ACCESS(args, channel_update_callback, nullptr) != nullptr) {
+    channel_update_callback = [ptr = args->channel_update_callback, user_data](
+                                  const std::string& name, bool listening) {
+      FlutterChannelUpdate update{sizeof(FlutterChannelUpdate), name.c_str(),
+                                  listening};
+      ptr(&update, user_data);
+    };
+  }
+
+  // View focus change request callback.
+  flutter::PlatformViewEmbedder::ViewFocusChangeRequestCallback
+      view_focus_change_request_callback = nullptr;
+  if (SAFE_ACCESS(args, view_focus_change_request_callback, nullptr) !=
+      nullptr) {
+    view_focus_change_request_callback =
+        [ptr = args->view_focus_change_request_callback,
+         user_data](const flutter::ViewFocusChangeRequest& request) {
+          FlutterViewFocusChangeRequest embedder_request{
+              .struct_size = sizeof(FlutterViewFocusChangeRequest),
+              .view_id = request.view_id(),
+              .state = static_cast<FlutterViewFocusState>(request.state()),
+              .direction =
+                  static_cast<FlutterViewFocusDirection>(request.direction()),
+          };
+          ptr(&embedder_request, user_data);
+        };
+  }
+
+  // Compositor / external view embedder.
+  auto external_view_embedder_result = InferExternalViewEmbedderFromArgs(
+      SAFE_ACCESS(args, compositor, nullptr), settings.enable_impeller);
+  if (!external_view_embedder_result.ok()) {
+    FML_LOG(ERROR) << external_view_embedder_result.status().message();
+    return LOG_EMBEDDER_ERROR(kInvalidArguments,
+                              "Compositor arguments were invalid.");
+  }
+
+  flutter::PlatformViewEmbedder::PlatformDispatchTable platform_dispatch_table =
+      {
+          update_semantics_callback,           //
+          platform_message_response_callback,  //
+          vsync_callback,                      //
+          nullptr,                             // compute_platform_resolved_locale
+          on_pre_engine_restart_callback,       //
+          channel_update_callback,             //
+          view_focus_change_request_callback,  //
+      };
+
+  auto on_create_platform_view = InferPlatformViewCreationCallback(
+      config, user_data, platform_dispatch_table,
+      std::move(external_view_embedder_result.value()),
+      settings.enable_impeller);
+
+  if (!on_create_platform_view) {
+    return LOG_EMBEDDER_ERROR(
+        kInternalInconsistency,
+        "Could not infer platform view creation callback.");
+  }
+
+  flutter::Shell::CreateCallback<flutter::Rasterizer> on_create_rasterizer =
+      [](flutter::Shell& shell) {
+        return std::make_unique<flutter::Rasterizer>(shell);
+      };
+
+  // External texture resolver.
+  using ExternalTextureResolver = flutter::EmbedderExternalTextureResolver;
+  std::unique_ptr<ExternalTextureResolver> external_texture_resolver;
+  external_texture_resolver = std::make_unique<ExternalTextureResolver>();
+
+#ifdef SHELL_ENABLE_GL
+  flutter::EmbedderExternalTextureGL::ExternalTextureCallback
+      external_texture_callback;
+  if (config->type == kOpenGL) {
+    const FlutterOpenGLRendererConfig* open_gl_config = &config->open_gl;
+    if (SAFE_ACCESS(open_gl_config, gl_external_texture_frame_callback,
+                    nullptr) != nullptr) {
+      external_texture_callback =
+          [ptr = open_gl_config->gl_external_texture_frame_callback, user_data](
+              int64_t texture_identifier, size_t width,
+              size_t height) -> std::unique_ptr<FlutterOpenGLTexture> {
+        std::unique_ptr<FlutterOpenGLTexture> texture =
+            std::make_unique<FlutterOpenGLTexture>();
+        if (!ptr(user_data, texture_identifier, width, height, texture.get())) {
+          return nullptr;
+        }
+        return texture;
+      };
+      external_texture_resolver =
+          std::make_unique<ExternalTextureResolver>(external_texture_callback);
+    }
+  }
+#endif  // SHELL_ENABLE_GL
+#ifdef SHELL_ENABLE_METAL
+  flutter::EmbedderExternalTextureMetal::ExternalTextureCallback
+      external_texture_metal_callback;
+  if (config->type == kMetal) {
+    const FlutterMetalRendererConfig* metal_config = &config->metal;
+    if (SAFE_ACCESS(metal_config, external_texture_frame_callback, nullptr)) {
+      external_texture_metal_callback =
+          [ptr = metal_config->external_texture_frame_callback, user_data](
+              int64_t texture_identifier, size_t width,
+              size_t height) -> std::unique_ptr<FlutterMetalExternalTexture> {
+        std::unique_ptr<FlutterMetalExternalTexture> texture =
+            std::make_unique<FlutterMetalExternalTexture>();
+        texture->struct_size = sizeof(FlutterMetalExternalTexture);
+        if (!ptr(user_data, texture_identifier, width, height, texture.get())) {
+          return nullptr;
+        }
+        return texture;
+      };
+      external_texture_resolver = std::make_unique<ExternalTextureResolver>(
+          external_texture_metal_callback);
+    }
+  }
+#endif  // SHELL_ENABLE_METAL
+
+  // Thread host.
+  auto custom_task_runners = SAFE_ACCESS(args, custom_task_runners, nullptr);
+  auto thread_config_callback = [&custom_task_runners](
+                                    const fml::Thread::ThreadConfig& config) {
+    fml::Thread::SetCurrentThreadName(config);
+    if (!custom_task_runners || !custom_task_runners->thread_priority_setter) {
+      return;
+    }
+    FlutterThreadPriority priority = FlutterThreadPriority::kNormal;
+    switch (config.priority) {
+      case fml::Thread::ThreadPriority::kBackground:
+        priority = FlutterThreadPriority::kBackground;
+        break;
+      case fml::Thread::ThreadPriority::kNormal:
+        priority = FlutterThreadPriority::kNormal;
+        break;
+      case fml::Thread::ThreadPriority::kDisplay:
+        priority = FlutterThreadPriority::kDisplay;
+        break;
+      case fml::Thread::ThreadPriority::kRaster:
+        priority = FlutterThreadPriority::kRaster;
+        break;
+    }
+    custom_task_runners->thread_priority_setter(priority);
+  };
+  auto thread_host =
+      flutter::EmbedderThreadHost::CreateEmbedderOrEngineManagedThreadHost(
+          custom_task_runners, thread_config_callback);
+
+  if (!thread_host || !thread_host->IsValid()) {
+    return LOG_EMBEDDER_ERROR(kInvalidArguments,
+                              "Could not set up or infer thread configuration "
+                              "to run the Flutter engine on.");
+  }
+
+  auto task_runners = thread_host->GetTaskRunners();
+
+  if (!task_runners.IsValid()) {
+    return LOG_EMBEDDER_ERROR(kInternalInconsistency,
+                              "Task runner configuration was invalid.");
+  }
+
+  // Task observers for microtask queue flushing.
+  bool has_ui_thread_message_loop =
+      task_runners.GetUITaskRunner()->GetTaskQueueId().is_valid();
+  settings.task_observer_add = [has_ui_thread_message_loop](
+                                   intptr_t key, const fml::closure& callback) {
+    if (has_ui_thread_message_loop) {
+      fml::MessageLoop::GetCurrent().AddTaskObserver(key, callback);
+    }
+    return fml::TaskQueueId::Invalid();
+  };
+  settings.task_observer_remove = [has_ui_thread_message_loop](
+                                      fml::TaskQueueId queue_id, intptr_t key) {
+    if (has_ui_thread_message_loop) {
+      fml::MessageLoop::GetCurrent().RemoveTaskObserver(key);
+    }
+  };
+
+  // Create a SwiftRuntimeController from the callback table.
+  auto runtime_callbacks =
+      reinterpret_cast<const SwiftRuntimeCallbacks*>(runtime_controller);
+  auto rc = std::make_unique<flutter::SwiftRuntimeController>(
+      *runtime_callbacks);
+
+  // Create the engine with the Swift constructor.
+  auto embedder_engine = std::make_unique<flutter::EmbedderEngine>(
+      std::move(thread_host),               //
+      std::move(task_runners),              //
+      std::move(settings),                  //
+      on_create_platform_view,              //
+      on_create_rasterizer,                 //
+      std::move(external_texture_resolver), //
+      std::move(rc)                         //
+  );
+
+  // Release the ownership of the embedder engine to the caller.
+  *engine_out = reinterpret_cast<FLUTTER_API_SYMBOL(FlutterEngine)>(
+      embedder_engine.release());
+  return kSuccess;
+}
+
+FLUTTER_EXPORT
+FlutterEngineResult FlutterEngineRunInitializedSwift(
+    FLUTTER_API_SYMBOL(FlutterEngine) engine) {
+  if (!engine) {
+    return LOG_EMBEDDER_ERROR(kInvalidArguments, "Engine handle was invalid.");
+  }
+
+  auto embedder_engine = reinterpret_cast<flutter::EmbedderEngine*>(engine);
+
+  // The engine must not already be running.
+  if (embedder_engine->IsValid()) {
+    return LOG_EMBEDDER_ERROR(kInvalidArguments, "Engine handle was invalid.");
+  }
+
+  // Step 1: Launch the shell (Swift mode — no Dart VM).
+  if (!embedder_engine->LaunchShellSwift()) {
+    return LOG_EMBEDDER_ERROR(kInvalidArguments,
+                              "Could not launch the engine using supplied "
+                              "initialization arguments.");
+  }
+
+  // Step 2: Tell the platform view to initialize itself.
+  if (!embedder_engine->NotifyCreated()) {
+    return LOG_EMBEDDER_ERROR(kInternalInconsistency,
+                              "Could not create platform view components.");
+  }
+
+  // No Step 3 — there is no Dart isolate to run.
+
+  return kSuccess;
+}
+
+FLUTTER_EXPORT
 FlutterEngineResult FlutterEngineAddView(FLUTTER_API_SYMBOL(FlutterEngine)
                                              engine,
                                          const FlutterAddViewInfo* info) {
@@ -3749,6 +4111,8 @@ FlutterEngineResult FlutterEngineGetProcAddresses(
   SET_PROC(AddView, FlutterEngineAddView);
   SET_PROC(RemoveView, FlutterEngineRemoveView);
   SET_PROC(SendViewFocusEvent, FlutterEngineSendViewFocusEvent);
+  SET_PROC(InitializeSwift, FlutterEngineInitializeSwift);
+  SET_PROC(RunInitializedSwift, FlutterEngineRunInitializedSwift);
 #undef SET_PROC
 
   return kSuccess;

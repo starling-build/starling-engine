@@ -98,6 +98,18 @@ FLUTTER_DARWIN_EXPORT
  */
 - (void)shutDownEngine;
 
+/**
+ * Runs the engine in Swift mode (no Dart VM) using the given runtime callbacks.
+ *
+ * The runtimeCallbacks pointer must point to a SwiftRuntimeCallbacks struct
+ * (defined in swift_runtime_callbacks.h). The struct is copied internally;
+ * the caller retains ownership of the pointer.
+ *
+ * @param runtimeCallbacks Pointer to a SwiftRuntimeCallbacks struct.
+ * @return YES if the engine started successfully; NO otherwise.
+ */
+- (BOOL)runSwiftWithRuntimeCallbacks:(nonnull const void*)runtimeCallbacks;
+
 @end
 
 #endif  // FLUTTER_SHELL_PLATFORM_DARWIN_MACOS_FRAMEWORK_HEADERS_FLUTTERENGINE_H_

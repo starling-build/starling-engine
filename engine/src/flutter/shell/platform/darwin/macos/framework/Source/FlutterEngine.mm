@@ -491,6 +491,9 @@ static void OnPlatformMessage(const FlutterPlatformMessage* message, void* user_
   // The text input plugin that handles text editing state for text fields.
   FlutterTextInputPlugin* _textInputPlugin;
 
+  // Whether the engine is running in Swift mode (no Dart VM).
+  BOOL _swiftMode;
+
   // Whether the engine is running in multi-window mode. This affects behavior
   // when adding view controller (it will fail when calling multiple times without
   // _multiviewEnabled).
@@ -802,6 +805,119 @@ static void SetThreadPriority(FlutterThreadPriority priority) {
   [self updateDisplayConfig];
   // Send the initial user settings such as brightness and text scale factor
   // to the engine.
+  [self sendInitialSettings];
+  return YES;
+}
+
+- (BOOL)runSwiftWithRuntimeCallbacks:(const void*)runtimeCallbacks {
+  if (self.running) {
+    return NO;
+  }
+
+  if (!_allowHeadlessExecution && [_viewControllers count] == 0) {
+    NSLog(@"Attempted to run an engine with no view controller without headless mode enabled.");
+    return NO;
+  }
+
+  _swiftMode = YES;
+
+  [self addInternalPlugins];
+
+  // The first argument of argv is required to be the executable name.
+  std::vector<const char*> argv = {[self.executableName UTF8String]};
+  std::vector<std::string> switches = self.switches;
+
+  // Force Skia (Ganesh/Metal) for Swift mode. The Impeller text path aborts on
+  // macOS when SkUnicode can't open an ICU break iterator (text_frame == nullptr);
+  // Skia degrades gracefully and renders text. This also matches the Swift bridge
+  // being Skia-only.
+  switches.push_back("--enable-impeller=false");
+
+  std::transform(switches.begin(), switches.end(), std::back_inserter(argv),
+                 [](const std::string& arg) -> const char* { return arg.c_str(); });
+
+  FlutterProjectArgs flutterArguments = {};
+  flutterArguments.struct_size = sizeof(FlutterProjectArgs);
+  flutterArguments.assets_path = _project.assetsPath.UTF8String;
+  flutterArguments.icu_data_path = _project.ICUDataPath.UTF8String;
+  flutterArguments.command_line_argc = static_cast<int>(argv.size());
+  flutterArguments.command_line_argv = argv.empty() ? nullptr : argv.data();
+  flutterArguments.platform_message_callback = (FlutterPlatformMessageCallback)OnPlatformMessage;
+  flutterArguments.update_semantics_callback2 = [](const FlutterSemanticsUpdate2* update,
+                                                   void* user_data) {
+    FlutterEngine* engine = (__bridge FlutterEngine*)user_data;
+    [[engine viewControllerForIdentifier:kFlutterImplicitViewId] updateSemantics:update];
+  };
+  flutterArguments.log_message_callback = [](const char* tag, const char* message,
+                                             void* user_data) {
+    std::stringstream stream;
+    if (tag && tag[0]) {
+      stream << tag << ": ";
+    }
+    stream << message;
+    std::string log = stream.str();
+    [FlutterLogger logDirect:[NSString stringWithUTF8String:log.c_str()]];
+  };
+
+  flutterArguments.engine_id = reinterpret_cast<int64_t>((__bridge void*)self);
+
+  // Use merged platform/UI thread (same as default macOS behavior).
+  FlutterTaskRunnerDescription platformTaskRunnerDescription =
+      [self createPlatformThreadTaskDescription];
+  FlutterTaskRunnerDescription uiTaskRunnerDescription =
+      [self createPlatformThreadTaskDescription];
+
+  const FlutterCustomTaskRunners custom_task_runners = {
+      .struct_size = sizeof(FlutterCustomTaskRunners),
+      .platform_task_runner = &platformTaskRunnerDescription,
+      .thread_priority_setter = SetThreadPriority,
+      .ui_task_runner = &uiTaskRunnerDescription,
+  };
+  flutterArguments.custom_task_runners = &custom_task_runners;
+
+  flutterArguments.compositor = [self createFlutterCompositor];
+
+  flutterArguments.on_pre_engine_restart_callback = [](void* user_data) {
+    FlutterEngine* engine = (__bridge FlutterEngine*)user_data;
+    [engine engineCallbackOnPreEngineRestart];
+  };
+
+  flutterArguments.vsync_callback = [](void* user_data, intptr_t baton) {
+    FlutterEngine* engine = (__bridge FlutterEngine*)user_data;
+    [engine onVSync:baton];
+  };
+
+  flutterArguments.view_focus_change_request_callback =
+      [](const FlutterViewFocusChangeRequest* request, void* user_data) {
+        FlutterEngine* engine = (__bridge FlutterEngine*)user_data;
+        [engine onFocusChangeRequest:request];
+      };
+
+  FlutterRendererConfig rendererConfig = [_renderer createRendererConfig];
+  FlutterEngineResult result = _embedderAPI.InitializeSwift(
+      FLUTTER_ENGINE_VERSION, &rendererConfig, &flutterArguments,
+      (__bridge void*)(self), runtimeCallbacks, &_engine);
+  if (result != kSuccess) {
+    NSLog(@"Failed to initialize Flutter engine (Swift mode): error %d", result);
+    return NO;
+  }
+
+  result = _embedderAPI.RunInitializedSwift(_engine);
+  if (result != kSuccess) {
+    NSLog(@"Failed to run an initialized engine (Swift mode): error %d", result);
+    return NO;
+  }
+
+  [self sendUserLocales];
+
+  // Update window metric for all view controllers.
+  NSEnumerator* viewControllerEnumerator = [_viewControllers objectEnumerator];
+  FlutterViewController* nextViewController;
+  while ((nextViewController = [viewControllerEnumerator nextObject])) {
+    [self updateWindowMetricsForViewController:nextViewController];
+  }
+
+  [self updateDisplayConfig];
   [self sendInitialSettings];
   return YES;
 }

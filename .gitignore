@@ -163,3 +163,8 @@ app.*.symbols
 .python-version
 .gclient_previous_custom_vars
 .gclient_previous_sync_commits
+
+# SwiftPM build artifacts (apps/*, flutter_swift)
+.build/
+# Starling deploy build (STARLING_DEPLOY, see build-shell.sh)
+.build-starling/

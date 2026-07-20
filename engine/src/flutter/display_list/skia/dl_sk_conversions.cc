@@ -235,9 +235,49 @@ sk_sp<SkImageFilter> ToSk(const DlImageFilter* filter) {
       }
       return skia_filter->makeWithLocalMatrix(ToSkMatrix(lm_filter->matrix()));
     }
-    case DlImageFilterType::kRuntimeEffect:
-      // UNSUPPORTED.
-      return nullptr;
+    case DlImageFilterType::kRuntimeEffect: {
+      const DlRuntimeEffectImageFilter* rt_filter =
+          filter->asRuntimeEffectFilter();
+      FML_DCHECK(rt_filter != nullptr);
+      auto runtime_effect = rt_filter->runtime_effect();
+      if (!runtime_effect || !runtime_effect->skia_runtime_effect()) {
+        return nullptr;
+      }
+
+      // Wrap the raw uniform bytes as SkData without copying — the release
+      // proc keeps the backing shared_ptr alive for the SkData's lifetime.
+      // Matches the kRuntimeEffect color-source conversion above.
+      auto uniform_data = rt_filter->uniform_data();
+      auto* uniform_ref =
+          new std::shared_ptr<std::vector<uint8_t>>(uniform_data);
+      auto sk_uniform_data = SkData::MakeWithProc(
+          uniform_data->data(), uniform_data->size(),
+          [](const void* ptr, void* context) {
+            delete reinterpret_cast<std::shared_ptr<std::vector<uint8_t>>*>(
+                context);
+          },
+          uniform_ref);
+
+      SkRuntimeEffectBuilder builder(runtime_effect->skia_runtime_effect(),
+                                     sk_uniform_data);
+
+      // Bind any explicit child sampler shaders by name. ImageFilter.shader
+      // normally leaves these null — the backdrop is bound implicitly to
+      // the sole child by SkImageFilters::RuntimeShader below.
+      const auto& samplers = rt_filter->samplers();
+      auto effect_children = builder.effect()->children();
+      for (size_t i = 0;
+           i < samplers.size() && i < effect_children.size(); i++) {
+        if (samplers[i]) {
+          builder.child(effect_children[i].name) = ToSk(samplers[i]);
+        }
+      }
+
+      // An empty childShaderName tells Skia to bind the filter input (the
+      // backdrop) to the effect's single child shader automatically.
+      return SkImageFilters::RuntimeShader(builder, /*childShaderName=*/"",
+                                           /*input=*/nullptr);
+    }
   }
 }
 

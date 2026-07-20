@@ -106,7 +106,10 @@ vars = {
   # logic or condition may not work if this flag is False.
   # TODO(zijiehe): Make this condition more strict to only download fuchsia
   # dependencies when necessary: b/40935282
-  'download_fuchsia_deps': 'host_os == "linux"',
+  # The Fuchsia SDK and toolchain are published for linux-amd64 only; on
+  # linux-arm64 the gen_build_defs hook fails trying to exec the x64
+  # llvm-readelf. Fuchsia is not needed for the Swift/Linux build, so gate it.
+  'download_fuchsia_deps': 'host_os == "linux" and host_cpu == "x64"',
   # Downloads the fuchsia SDK as listed in fuchsia_sdk_path var. This variable
   # is currently only used for the Fuchsia LSC process and is not intended for
   # local development.
@@ -638,6 +641,9 @@ deps = {
        }
      ],
      # Always download the JDK since java is required for running the formatter.
+     # No openjdk CIPD package is published for linux-arm64, so skip it there;
+     # the JDK is only needed for the Java formatter / Android tooling.
+     'condition': 'host_os != "linux" or host_cpu != "arm64"',
      'dep_type': 'cipd',
    },
 

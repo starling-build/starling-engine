@@ -171,6 +171,16 @@ group("flutter") {
     public_deps += [ "//flutter/impeller/toolkit/interop:sdk" ]
   }
 
+  # Build Swift bridge (C++ wrapper layer for Swift interop)
+  if (is_mac || is_ios || is_linux) {
+    public_deps += [ "//flutter/lib/ui/swift:swift_bridge" ]
+  }
+
+  # Build DRM/KMS shell for Linux (produces libflutter_linux_drm.so)
+  if (is_linux) {
+    public_deps += [ "//flutter/shell/platform/linux_drm:linux_drm" ]
+  }
+
   if ((flutter_runtime_mode == "debug" || flutter_runtime_mode == "profile") &&
       is_ios) {
     public_deps += [ "//flutter/testing/ios_scenario_app" ]

@@ -170,7 +170,7 @@ def get_host_cpu():
 #
 # For macOS host builds where --mac-cpu is specified, returns that value.
 # For windows host builds where --windows-cpu is specified, returns that value.
-# For all other host builds, assumes 'x64'.
+# For all other host builds, defaults to the detected host CPU.
 def get_target_cpu(args):
   if args.target_os == 'android':
     return args.android_cpu
@@ -191,13 +191,13 @@ def get_target_cpu(args):
   if args.target_os == 'qnx':
     return 'arm64'
 
-  # Host build. Default to x64 unless overridden.
+  # Host build. Default to the host CPU unless overridden.
   if get_host_os() == 'mac' and args.mac_cpu:
     return args.mac_cpu
   if get_host_os() == 'win' and args.windows_cpu:
     return args.windows_cpu
 
-  return 'x64'
+  return get_host_cpu()
 
 
 def buildtools_dir():

@@ -74,6 +74,8 @@ class GPUSurfaceGLSkia : public Surface {
   // `GLContextFrameBufferInfo`.
   std::optional<DlIRect> existing_damage_ = std::nullopt;
   bool context_owner_ = false;
+  // Stencil bits of the onscreen surface, queried once from GL.
+  int surface_stencil_bits_ = -1;
   // TODO(38466): Refactor GPU surface APIs take into account the fact that an
   // external view embedder may want to render to the root surface. This is a
   // hack to make avoid allocating resources for the root surface when an

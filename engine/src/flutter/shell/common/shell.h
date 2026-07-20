@@ -31,6 +31,7 @@
 #include "flutter/lib/ui/window/platform_message.h"
 #include "flutter/runtime/dart_vm_lifecycle.h"
 #include "flutter/runtime/platform_data.h"
+#include "flutter/runtime/runtime_controller_interface.h"
 #include "flutter/runtime/service_protocol.h"
 #include "flutter/shell/common/animator.h"
 #include "flutter/shell/common/display_manager.h"
@@ -173,6 +174,39 @@ class Shell final : public PlatformView::Delegate,
       Settings settings,
       const CreateCallback<PlatformView>& on_create_platform_view,
       const CreateCallback<Rasterizer>& on_create_rasterizer,
+      bool is_gpu_disabled = false);
+
+  //----------------------------------------------------------------------------
+  /// @brief      Creates a shell instance for the Swift runtime path. This
+  ///             is similar to Shell::Create() but skips DartVM initialization
+  ///             entirely. Instead, a pre-created RuntimeControllerInterface
+  ///             is injected into the Engine.
+  ///
+  ///             The SwiftBridgeEngineRegistry callbacks are wired up during
+  ///             engine creation so that ScheduleFrame() and RenderView() can
+  ///             reach the engine.
+  ///
+  /// @param[in]  platform_data            Platform-specific data.
+  /// @param[in]  task_runners             The task runners.
+  /// @param[in]  settings                 The settings.
+  /// @param[in]  on_create_platform_view  Callback that creates the platform
+  ///                                      view on the platform task runner.
+  /// @param[in]  on_create_rasterizer     Callback that creates the rasterizer
+  ///                                      on the raster task runner.
+  /// @param[in]  runtime_controller       A pre-created runtime controller
+  ///                                      (e.g., SwiftRuntimeController).
+  /// @param[in]  is_gpu_disabled          Whether the GPU is initially
+  ///                                      disabled.
+  ///
+  /// @return     A fully initialized shell, or nullptr on failure.
+  ///
+  static std::unique_ptr<Shell> CreateSwift(
+      const PlatformData& platform_data,
+      const TaskRunners& task_runners,
+      Settings settings,
+      const CreateCallback<PlatformView>& on_create_platform_view,
+      const CreateCallback<Rasterizer>& on_create_rasterizer,
+      std::unique_ptr<RuntimeControllerInterface> runtime_controller,
       bool is_gpu_disabled = false);
 
   //----------------------------------------------------------------------------
@@ -537,6 +571,14 @@ class Shell final : public PlatformView::Delegate,
         const Settings& settings,
         bool is_gpu_disabled);
 
+  /// @brief      Constructor for the Swift runtime path. Does not require a
+  ///             DartVMRef — the vm_ member is left as a null/empty reference.
+  Shell(const TaskRunners& task_runners,
+        const std::shared_ptr<ResourceCacheLimitCalculator>&
+            resource_cache_limit_calculator,
+        const Settings& settings,
+        bool is_gpu_disabled);
+
   static std::unique_ptr<Shell> CreateShellOnPlatformThread(
       DartVMRef vm,
       fml::RefPtr<fml::RasterThreadMerger> parent_merger,
@@ -550,6 +592,17 @@ class Shell final : public PlatformView::Delegate,
       const Shell::CreateCallback<PlatformView>& on_create_platform_view,
       const Shell::CreateCallback<Rasterizer>& on_create_rasterizer,
       const EngineCreateCallback& on_create_engine,
+      bool is_gpu_disabled);
+
+  static std::unique_ptr<Shell> CreateShellOnPlatformThreadSwift(
+      const std::shared_ptr<ResourceCacheLimitCalculator>&
+          resource_cache_limit_calculator,
+      const TaskRunners& task_runners,
+      const PlatformData& platform_data,
+      const Settings& settings,
+      const Shell::CreateCallback<PlatformView>& on_create_platform_view,
+      const Shell::CreateCallback<Rasterizer>& on_create_rasterizer,
+      std::unique_ptr<RuntimeControllerInterface> runtime_controller,
       bool is_gpu_disabled);
 
   static std::unique_ptr<Shell> CreateWithSnapshot(

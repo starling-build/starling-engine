@@ -200,6 +200,9 @@ class DiffContext {
 
   DlRect MapRect(const DlRect& rect);
 
+  // Returns true if any TextureLayer was encountered during diffing.
+  bool has_texture_layer() const { return state_.has_texture; }
+
  private:
   struct State {
     State();

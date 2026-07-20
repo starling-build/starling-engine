@@ -1,0 +1,318 @@
+# Copyright 2013 The Flutter Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# GN build file for Flutter Swift Bridge C++ code.
+#
+# This builds the C++ bridge layer that provides Swift-compatible headers
+# and implementations for the dart:ui to Swift migration.
+#
+# Architecture:
+#   include/  - Swift-compatible headers (NO Flutter engine includes)
+#   src/      - Implementations (CAN include Flutter engine headers)
+#
+# The bridge headers use SWIFT_SHARED_REFERENCE for automatic memory
+# management via Swift ARC.
+
+import("//flutter/common/config.gni")
+
+# On Linux, override the default -z,defs to allow undefined symbols in the
+# shared library. These symbols (SwiftBridgeEngineRegistry methods) are
+# resolved at load time from the main executable, mirroring the macOS
+# -undefined dynamic_lookup behavior.
+config("swift_bridge_allow_undefined") {
+  if (is_linux) {
+    ldflags = [ "-Wl,-z,undefs" ]
+  }
+}
+
+config("swift_bridge_config") {
+  include_dirs = [ "." ]
+
+  # Visibility annotations for shared library exports
+  if (is_mac || is_ios) {
+    cflags = [
+      "-fvisibility=default",
+      # Swift toolchain headers for <swift/bridging>
+      "-isystem",
+      getenv("HOME") + "/Library/Developer/Toolchains/swift-6.2.1-RELEASE.xctoolchain/usr/include",
+    ]
+  }
+  if (is_linux) {
+    cflags = [
+      "-fvisibility=default",
+      # Swift toolchain headers for <swift/bridging>
+      "-isystem",
+      getenv("HOME") + "/.local/share/swiftly/toolchains/6.2.4/usr/include",
+    ]
+  }
+}
+
+# Header-only target for the reference counting base class.
+# This is used by all bridge classes.
+source_set("intrusive_reference_counted") {
+  sources = [ "include/intrusive_reference_counted.h" ]
+
+  public_configs = [ ":swift_bridge_config" ]
+}
+
+# Header-only target for SwiftBridgeEngineRegistry.
+# Used by the swift_bridge shared library to include the header without
+# linking the implementation (which lives in the executable).
+source_set("swift_bridge_engine_registry_headers") {
+  sources = [ "include/swift_bridge_engine_registry.h" ]
+
+  public_configs = [
+    ":swift_bridge_config",
+    "//flutter:config",
+  ]
+}
+
+# Implementation of SwiftBridgeEngineRegistry (static members).
+# Linked into the executable via //flutter/shell/common. The swift_bridge
+# shared library resolves these symbols at load time from the executable
+# via -undefined dynamic_lookup.
+source_set("swift_bridge_engine_registry") {
+  sources = [
+    "include/swift_bridge_engine_registry.h",
+    "src/swift_bridge_engine_registry.cc",
+  ]
+
+  public_configs = [
+    ":swift_bridge_config",
+    "//flutter:config",
+  ]
+}
+
+# SwiftRuntimeController — uses the C callback table, no Swift dependency.
+# Built as part of the engine; the Swift side fills in the callbacks at runtime.
+source_set("swift_runtime_controller") {
+  sources = [
+    "include/swift_runtime_callbacks.h",
+    "include/swift_runtime_controller.h",
+    "src/swift_runtime_controller.cc",
+  ]
+
+  public_configs = [
+    ":swift_bridge_config",
+    "//flutter:config",
+  ]
+
+  public_deps = [
+    ":swift_bridge_engine_registry",
+    "//flutter/runtime",
+  ]
+
+  deps = [
+    "//flutter/fml",
+    "//flutter/third_party/tonic",
+  ]
+}
+
+# Main Swift bridge library.
+# Add bridge implementations here as modules are migrated.
+shared_library("swift_bridge") {
+  sources = [
+    # Bridge headers (Swift-compatible, no Flutter includes)
+    "include/intrusive_reference_counted.h",
+    "include/rsuperellipse_bridge.h",
+    "include/channel_buffers_bridge.h",
+    "include/shader_bridge.h",
+    "include/gradient_bridge.h",
+    "include/image_bridge.h",
+    "include/image_shader_bridge.h",
+    "include/fragment_program_bridge.h",
+    "include/fragment_shader_bridge.h",
+    "include/path_bridge.h",
+    "include/path_measure_bridge.h",
+    "include/vertices_bridge.h",
+    "include/immutable_buffer_bridge.h",
+    "include/color_filter_bridge.h",
+    "include/image_filter_bridge.h",
+    "include/codec_bridge.h",
+    "include/canvas_bridge.h",
+    "include/picture_bridge.h",
+    "include/image_descriptor_bridge.h",
+    "include/engine_layer_bridge.h",
+    "include/scene_bridge.h",
+    "include/scene_builder_bridge.h",
+    "include/platform_dispatcher_bridge.h",
+    "include/semantics_flags_bridge.h",
+    "include/spell_out_string_attribute_bridge.h",
+    "include/locale_string_attribute_bridge.h",
+    "include/semantics_update_bridge.h",
+    "include/semantics_update_builder_bridge.h",
+    "include/paragraph_bridge.h",
+    "include/paragraph_builder_bridge.h",
+    "include/font_collection_bridge.h",
+    "include/view_bridge.h",
+
+    # Bridge implementations
+    "src/rsuperellipse_bridge.cc",
+    "src/channel_buffers_bridge.cc",
+    "src/shader_bridge.cc",
+    "src/gradient_bridge.cc",
+    "src/image_bridge.cc",
+    "src/image_shader_bridge.cc",
+    "src/fragment_program_bridge.cc",
+    "src/fragment_shader_bridge.cc",
+    "src/path_bridge.cc",
+    "src/path_measure_bridge.cc",
+    "src/vertices_bridge.cc",
+    "src/immutable_buffer_bridge.cc",
+    "src/color_filter_bridge.cc",
+    "src/image_filter_bridge.cc",
+    "src/codec_bridge.cc",
+    "src/canvas_bridge.cc",
+    "src/picture_bridge.cc",
+    "src/image_descriptor_bridge.cc",
+    "src/engine_layer_bridge.cc",
+    "src/scene_bridge.cc",
+    "src/scene_builder_bridge.cc",
+    "src/platform_dispatcher_bridge.cc",
+    "src/semantics_flags_bridge.cc",
+    "src/spell_out_string_attribute_bridge.cc",
+    "src/locale_string_attribute_bridge.cc",
+    "src/semantics_update_bridge.cc",
+    "src/semantics_update_builder_bridge.cc",
+    "src/paragraph_bridge.cc",
+    "src/paragraph_builder_bridge.cc",
+    "src/font_collection_bridge.cc",
+    "src/view_bridge.cc",
+
+    # Future bridge implementations:
+    # "src/paint_bridge.cc",
+    # "src/picture_recorder_bridge.cc",
+  ]
+
+  public_configs = [
+    ":swift_bridge_config",
+    "//flutter:config",
+  ]
+
+  # SwiftBridgeEngineRegistry symbols are resolved at load time from the
+  # executable (which links the swift_bridge_engine_registry source_set via
+  # //flutter/shell/common). This avoids duplicate statics between the dylib
+  # and executable.
+  if (is_mac || is_ios) {
+    ldflags = [ "-undefined", "dynamic_lookup" ]
+  }
+  if (is_linux) {
+    # Applied via config so it comes AFTER the default -z,defs from
+    # //build/config/compiler:compiler (last -z flag wins).
+    configs += [ ":swift_bridge_allow_undefined" ]
+  }
+
+  deps = [
+    ":intrusive_reference_counted",
+    ":swift_bridge_engine_registry_headers",
+    "//flutter/display_list",
+    "//flutter/impeller/core",
+    "//flutter/impeller/geometry",
+    "//flutter/fml",
+    "//flutter/impeller/runtime_stage",
+    "//flutter/skia",
+    "//flutter/skia/modules/skparagraph",
+    "//flutter/flow",
+    "//flutter/txt",
+  ]
+}
+
+# ─── Unified Swift engine library ──────────────────────────────────────────
+#
+# Combines swift_bridge + swift_bridge_engine_registry + DRM shell sources
+# into the main flutter_engine shared library, eliminating the need for
+# separate libswift_bridge.so and libflutter_linux_drm.so.
+#
+# This is a source_set that gets linked into the engine via
+# //flutter/shell/platform/embedder:flutter_engine_library.
+
+source_set("swift_bridge_sources") {
+  sources = [
+    # Bridge headers
+    "include/intrusive_reference_counted.h",
+    "include/rsuperellipse_bridge.h",
+    "include/channel_buffers_bridge.h",
+    "include/shader_bridge.h",
+    "include/gradient_bridge.h",
+    "include/image_bridge.h",
+    "include/image_shader_bridge.h",
+    "include/fragment_program_bridge.h",
+    "include/fragment_shader_bridge.h",
+    "include/path_bridge.h",
+    "include/path_measure_bridge.h",
+    "include/vertices_bridge.h",
+    "include/immutable_buffer_bridge.h",
+    "include/color_filter_bridge.h",
+    "include/image_filter_bridge.h",
+    "include/codec_bridge.h",
+    "include/canvas_bridge.h",
+    "include/picture_bridge.h",
+    "include/image_descriptor_bridge.h",
+    "include/engine_layer_bridge.h",
+    "include/scene_bridge.h",
+    "include/scene_builder_bridge.h",
+    "include/platform_dispatcher_bridge.h",
+    "include/semantics_flags_bridge.h",
+    "include/spell_out_string_attribute_bridge.h",
+    "include/locale_string_attribute_bridge.h",
+    "include/semantics_update_bridge.h",
+    "include/semantics_update_builder_bridge.h",
+    "include/paragraph_bridge.h",
+    "include/paragraph_builder_bridge.h",
+    "include/font_collection_bridge.h",
+    "include/view_bridge.h",
+
+    # Bridge implementations
+    "src/rsuperellipse_bridge.cc",
+    "src/channel_buffers_bridge.cc",
+    "src/shader_bridge.cc",
+    "src/gradient_bridge.cc",
+    "src/image_bridge.cc",
+    "src/image_shader_bridge.cc",
+    "src/fragment_program_bridge.cc",
+    "src/fragment_shader_bridge.cc",
+    "src/path_bridge.cc",
+    "src/path_measure_bridge.cc",
+    "src/vertices_bridge.cc",
+    "src/immutable_buffer_bridge.cc",
+    "src/color_filter_bridge.cc",
+    "src/image_filter_bridge.cc",
+    "src/codec_bridge.cc",
+    "src/canvas_bridge.cc",
+    "src/picture_bridge.cc",
+    "src/image_descriptor_bridge.cc",
+    "src/engine_layer_bridge.cc",
+    "src/scene_bridge.cc",
+    "src/scene_builder_bridge.cc",
+    "src/platform_dispatcher_bridge.cc",
+    "src/semantics_flags_bridge.cc",
+    "src/spell_out_string_attribute_bridge.cc",
+    "src/locale_string_attribute_bridge.cc",
+    "src/semantics_update_bridge.cc",
+    "src/semantics_update_builder_bridge.cc",
+    "src/paragraph_bridge.cc",
+    "src/paragraph_builder_bridge.cc",
+    "src/font_collection_bridge.cc",
+    "src/view_bridge.cc",
+  ]
+
+  public_configs = [
+    ":swift_bridge_config",
+    "//flutter:config",
+  ]
+
+  deps = [
+    ":swift_bridge_engine_registry",
+    ":intrusive_reference_counted",
+    "//flutter/display_list",
+    "//flutter/impeller/core",
+    "//flutter/impeller/geometry",
+    "//flutter/fml",
+    "//flutter/impeller/runtime_stage",
+    "//flutter/skia",
+    "//flutter/skia/modules/skparagraph",
+    "//flutter/flow",
+    "//flutter/txt",
+  ]
+}

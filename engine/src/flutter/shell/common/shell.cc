@@ -18,6 +18,7 @@
 #include "flutter/common/constants.h"
 #include "flutter/common/graphics/persistent_cache.h"
 #include "flutter/fml/base32.h"
+#include "flutter/fml/concurrent_message_loop.h"
 #include "flutter/fml/file.h"
 #include "flutter/fml/icu_util.h"
 #include "flutter/fml/log_settings.h"
@@ -28,9 +29,11 @@
 #include "flutter/fml/trace_event.h"
 #include "flutter/runtime/dart_vm.h"
 #include "flutter/shell/common/base64.h"
+#include "flutter/lib/ui/swift/include/swift_bridge_engine_registry.h"
 #include "flutter/shell/common/engine.h"
 #include "flutter/shell/common/skia_event_tracer_impl.h"
 #include "flutter/shell/common/switches.h"
+
 #include "flutter/shell/common/vsync_waiter.h"
 #include "rapidjson/stringbuffer.h"
 #include "rapidjson/writer.h"
@@ -597,13 +600,296 @@ Shell::Shell(DartVMRef vm,
                 std::placeholders::_1, std::placeholders::_2)};
 }
 
+Shell::Shell(const TaskRunners& task_runners,
+             const std::shared_ptr<ResourceCacheLimitCalculator>&
+                 resource_cache_limit_calculator,
+             const Settings& settings,
+             bool is_gpu_disabled)
+    : task_runners_(task_runners),
+      parent_raster_thread_merger_(nullptr),
+      resource_cache_limit_calculator_(resource_cache_limit_calculator),
+      settings_(settings),
+      vm_(),
+      is_gpu_disabled_sync_switch_(new fml::SyncSwitch(is_gpu_disabled)),
+      weak_factory_gpu_(nullptr),
+      weak_factory_(this) {
+  FML_DCHECK(task_runners_.IsValid());
+  FML_DCHECK(task_runners_.GetPlatformTaskRunner()->RunsTasksOnCurrentThread());
+
+  display_manager_ = std::make_unique<DisplayManager>();
+  resource_cache_limit_calculator->AddResourceCacheLimitItem(
+      weak_factory_.GetWeakPtr());
+
+  // Generate a WeakPtrFactory for use with the raster thread.
+  fml::TaskRunner::RunNowOrPostTask(
+      task_runners_.GetRasterTaskRunner(), fml::MakeCopyable([this]() mutable {
+        this->weak_factory_gpu_ =
+            std::make_unique<fml::TaskRunnerAffineWeakPtrFactory<Shell>>(this);
+      }));
+
+  // Note: Service protocol handlers are not installed for the Swift path
+  // since there is no Dart VM service protocol to register with.
+}
+
+std::unique_ptr<Shell> Shell::CreateSwift(
+    const PlatformData& platform_data,
+    const TaskRunners& task_runners,
+    Settings settings,
+    const Shell::CreateCallback<PlatformView>& on_create_platform_view,
+    const Shell::CreateCallback<Rasterizer>& on_create_rasterizer,
+    std::unique_ptr<RuntimeControllerInterface> runtime_controller,
+    bool is_gpu_disabled) {
+  // Initialize tracing and other global state.
+  PerformInitializationTasks(settings);
+
+  TRACE_EVENT0("flutter", "Shell::CreateSwift");
+
+  auto resource_cache_limit_calculator =
+      std::make_shared<ResourceCacheLimitCalculator>(
+          settings.resource_cache_max_bytes_threshold);
+
+  const bool callbacks_valid =
+      on_create_platform_view && on_create_rasterizer;
+  if (!task_runners.IsValid() || !callbacks_valid || !runtime_controller) {
+    return nullptr;
+  }
+
+  fml::AutoResetWaitableEvent latch;
+  std::unique_ptr<Shell> shell;
+  auto platform_task_runner = task_runners.GetPlatformTaskRunner();
+  fml::TaskRunner::RunNowOrPostTask(
+      platform_task_runner,
+      fml::MakeCopyable(
+          [&latch,                                                  //
+           &shell,                                                  //
+           resource_cache_limit_calculator,                         //
+           task_runners = task_runners,                              //
+           platform_data = platform_data,                            //
+           settings = settings,                                      //
+           on_create_platform_view = on_create_platform_view,        //
+           on_create_rasterizer = on_create_rasterizer,              //
+           runtime_controller = std::move(runtime_controller),       //
+           is_gpu_disabled]() mutable {
+            shell = CreateShellOnPlatformThreadSwift(
+                resource_cache_limit_calculator,                     //
+                task_runners,                                        //
+                platform_data,                                       //
+                settings,                                            //
+                on_create_platform_view,                             //
+                on_create_rasterizer,                                //
+                std::move(runtime_controller),                       //
+                is_gpu_disabled);
+            latch.Signal();
+          }));
+  latch.Wait();
+  return shell;
+}
+
+std::unique_ptr<Shell> Shell::CreateShellOnPlatformThreadSwift(
+    const std::shared_ptr<ResourceCacheLimitCalculator>&
+        resource_cache_limit_calculator,
+    const TaskRunners& task_runners,
+    const PlatformData& platform_data,
+    const Settings& settings,
+    const Shell::CreateCallback<PlatformView>& on_create_platform_view,
+    const Shell::CreateCallback<Rasterizer>& on_create_rasterizer,
+    std::unique_ptr<RuntimeControllerInterface> runtime_controller,
+    bool is_gpu_disabled) {
+  if (!task_runners.IsValid()) {
+    FML_LOG(ERROR) << "Task runners to run the shell were invalid.";
+    return nullptr;
+  }
+
+  auto shell = std::unique_ptr<Shell>(
+      new Shell(task_runners, resource_cache_limit_calculator, settings,
+                is_gpu_disabled));
+
+  // Create the platform view on the platform thread (this thread).
+  auto platform_view = on_create_platform_view(*shell.get());
+  if (!platform_view || !platform_view->GetWeakPtr()) {
+    return nullptr;
+  }
+
+  // Create the rasterizer on the raster thread.
+  std::promise<std::unique_ptr<Rasterizer>> rasterizer_promise;
+  auto rasterizer_future = rasterizer_promise.get_future();
+
+  std::promise<std::shared_ptr<impeller::Context>> impeller_context_promise;
+  auto impeller_context_future =
+      std::make_shared<impeller::ImpellerContextFuture>(
+          impeller_context_promise.get_future());
+
+  PlatformView* platform_view_ptr = platform_view.get();
+
+  fml::TaskRunner::RunNowOrPostTask(
+      task_runners.GetRasterTaskRunner(),
+      [&rasterizer_promise,  //
+       impeller_context_future,
+       on_create_rasterizer,  //
+       shell = shell.get()]() {
+        TRACE_EVENT0("flutter", "ShellSetupGPUSubsystem");
+        std::unique_ptr<Rasterizer> rasterizer(on_create_rasterizer(*shell));
+        rasterizer->SetImpellerContext(impeller_context_future);
+        rasterizer_promise.set_value(std::move(rasterizer));
+      });
+
+  // Set up the impeller context on the raster thread.
+  fml::TaskRunner::RunNowOrPostTask(
+      task_runners.GetRasterTaskRunner(),
+      fml::MakeCopyable(
+          [impeller_context_promise = std::move(impeller_context_promise),  //
+           platform_view_ptr]() mutable {
+            TRACE_EVENT0("flutter", "CreateImpellerContext");
+            platform_view_ptr->SetupImpellerContext();
+            std::shared_ptr<impeller::Context> impeller_context =
+                platform_view_ptr->GetImpellerContext();
+            if (impeller_context) {
+              impeller_context_promise.set_value(impeller_context);
+            } else {
+              impeller_context_promise.set_value(nullptr);
+            }
+          }));
+
+  // Ask the platform view for the vsync waiter.
+  auto vsync_waiter = platform_view->CreateVSyncWaiter();
+  if (!vsync_waiter) {
+    return nullptr;
+  }
+
+  // Create the IO manager on the IO thread.
+  std::promise<std::shared_ptr<ShellIOManager>> io_manager_promise;
+  auto io_manager_future = io_manager_promise.get_future();
+  std::promise<fml::WeakPtr<ShellIOManager>> weak_io_manager_promise;
+  auto weak_io_manager_future = weak_io_manager_promise.get_future();
+  auto io_task_runner = shell->GetTaskRunners().GetIOTaskRunner();
+
+  fml::TaskRunner::RunNowOrPostTask(
+      io_task_runner,
+      [&io_manager_promise,                                                //
+       &weak_io_manager_promise,                                           //
+       platform_view_ptr,                                                  //
+       io_task_runner,                                                     //
+       is_backgrounded_sync_switch = shell->GetIsGpuDisabledSyncSwitch(),  //
+       impeller_enabled = settings.enable_impeller,                        //
+       impeller_context_future]() {
+        TRACE_EVENT0("flutter", "ShellSetupIOSubsystem");
+        auto io_manager = std::make_shared<ShellIOManager>(
+            nullptr,                      // resource context
+            is_backgrounded_sync_switch,  // sync switch
+            io_task_runner,               // unref queue task runner
+            impeller_context_future,      // impeller context
+            impeller_enabled              //
+        );
+        weak_io_manager_promise.set_value(io_manager->GetWeakPtr());
+        io_manager_promise.set_value(io_manager);
+
+        // Wait until Impeller context setup is complete before creating the
+        // resource context.
+        io_manager->GetImpellerContext();
+        sk_sp<GrDirectContext> resource_context =
+            platform_view_ptr->CreateResourceContext();
+        io_manager->NotifyResourceContextAvailable(resource_context);
+      });
+
+  // Send dispatcher_maker to the engine constructor.
+  auto dispatcher_maker = platform_view->GetDispatcherMaker();
+
+  // Create the engine on the UI thread with the injected RuntimeController.
+  std::promise<std::unique_ptr<Engine>> engine_promise;
+  auto engine_future = engine_promise.get_future();
+  fml::TaskRunner::RunNowOrPostTask(
+      shell->GetTaskRunners().GetUITaskRunner(),
+      fml::MakeCopyable(
+          [&engine_promise,                                        //
+           shell = shell.get(),                                    //
+           &dispatcher_maker,                                      //
+           vsync_waiter = std::move(vsync_waiter),                 //
+           &weak_io_manager_future,                                //
+           runtime_controller = std::move(runtime_controller)      //
+      ]() mutable {
+            TRACE_EVENT0("flutter", "ShellSetupUISubsystem");
+            const auto& task_runners = shell->GetTaskRunners();
+
+            // The animator is owned by the UI thread.
+            auto animator = std::make_unique<Animator>(
+                *shell, task_runners, std::move(vsync_waiter));
+
+            // Create a concurrent message loop for the image decoder since
+            // we don't have a DartVM to provide one.
+            auto concurrent_loop = fml::ConcurrentMessageLoop::Create();
+            auto image_decoder_task_runner =
+                concurrent_loop->GetTaskRunner();
+
+            auto engine = std::make_unique<Engine>(
+                /*delegate=*/*shell,
+                /*dispatcher_maker=*/dispatcher_maker,
+                /*image_decoder_task_runner=*/image_decoder_task_runner,
+                /*task_runners=*/task_runners,
+                /*settings=*/shell->GetSettings(),
+                /*animator=*/std::move(animator),
+                /*io_manager=*/weak_io_manager_future.get(),
+                /*font_collection=*/std::make_shared<FontCollection>(),
+                /*runtime_controller=*/std::move(runtime_controller),
+                /*gpu_disabled_switch=*/shell->is_gpu_disabled_sync_switch_);
+
+            // Set up fonts for text rendering.
+            engine->SetupDefaultFontManager();
+
+            // Pass the font collection to the Swift paragraph builder bridge
+            // so that ParagraphBuilderBridge can create txt::ParagraphBuilder
+            // instances for text rendering.
+            {
+              auto txt_fc = engine->GetFontCollection().GetFontCollection();
+              swift_bridge::SwiftBridgeEngineRegistry::SetFontCollection(&txt_fc);
+            }
+
+            // Wire up SwiftBridgeEngineRegistry callbacks so that Swift bridge
+            // functions (RenderView, ScheduleFrame) can reach the engine.
+            // We cast to RuntimeDelegate* to access Render(), which Engine
+            // overrides privately but is public on the RuntimeDelegate
+            // base class.
+            RuntimeDelegate* runtime_delegate = engine.get();
+            swift_bridge::SwiftBridgeEngineRegistry::SetRenderCallback(
+                [runtime_delegate](int64_t view_id,
+                                   std::unique_ptr<LayerTree> layer_tree,
+                                   float dpr) {
+                  runtime_delegate->Render(view_id, std::move(layer_tree), dpr);
+                });
+            // ScheduleFrame is public on Engine, so we can call it directly.
+            Engine* engine_ptr = engine.get();
+            swift_bridge::SwiftBridgeEngineRegistry::SetScheduleFrameCallback(
+                [engine_ptr](bool regenerate_layer_trees) {
+                  engine_ptr->ScheduleFrame(regenerate_layer_trees);
+                });
+
+            engine_promise.set_value(std::move(engine));
+          }));
+
+  if (!shell->Setup(std::move(platform_view),  //
+                    engine_future.get(),        //
+                    rasterizer_future.get(),    //
+                    io_manager_future.get())    //
+  ) {
+    return nullptr;
+  }
+
+  return shell;
+}
+
 Shell::~Shell() {
+  // Reset SwiftBridgeEngineRegistry callbacks during teardown so that stale
+  // engine pointers are never invoked.
+  swift_bridge::SwiftBridgeEngineRegistry::Reset();
+
 #if !SLIMPELLER
   PersistentCache::GetCacheForProcess()->RemoveWorkerTaskRunner(
       task_runners_.GetIOTaskRunner());
 #endif  //  !SLIMPELLER
 
-  vm_->GetServiceProtocol()->RemoveHandler(this);
+  // vm_ is null for the Swift runtime path — skip service protocol cleanup.
+  if (vm_) {
+    vm_->GetServiceProtocol()->RemoveHandler(this);
+  }
 
   fml::AutoResetWaitableEvent platiso_latch, ui_latch, gpu_latch,
       platform_latch, io_latch;
@@ -739,8 +1025,10 @@ void Shell::NotifyLowMemoryWarning() const {
   // This does not require a current isolate but does require a running VM.
   // Since a valid shell will not be returned to the embedder without a valid
   // DartVMRef, we can be certain that this is a safe spot to assume a VM is
-  // running.
-  ::Dart_NotifyLowMemory();
+  // running. Skip for the Swift runtime path where there is no DartVM.
+  if (vm_) {
+    ::Dart_NotifyLowMemory();
+  }
 
   task_runners_.GetRasterTaskRunner()->PostTask(
       [rasterizer = rasterizer_->GetWeakPtr(), trace_id = trace_id]() {
@@ -947,6 +1235,9 @@ fml::WeakPtr<ShellIOManager> Shell::GetIOManager() {
 }
 
 DartVM* Shell::GetDartVM() {
+  if (!vm_) {
+    return nullptr;
+  }
   return &vm_;
 }
 

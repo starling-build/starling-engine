@@ -1,0 +1,17 @@
+{
+  "name": "migration-scripts",
+  "version": "1.0.0",
+  "description": "Migration automation using Claude Agent SDK",
+  "type": "module",
+  "scripts": {
+    "migrate": "npx ts-node migrate_runner.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.0.0"
+  }
+}

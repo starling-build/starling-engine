@@ -146,11 +146,19 @@ source_set("common") {
     "//flutter/flow",
     "//flutter/fml",
     "//flutter/lib/ui",
+    "//flutter/lib/ui/swift:swift_bridge_engine_registry",
     "//flutter/runtime",
     "//flutter/shell/common:base64",
     "//flutter/shell/geometry",
     "//flutter/shell/profiling",
     "//flutter/skia",
+  ]
+
+  # Forward engine registry and runtime controller headers so dependents
+  # (like blue_screen_demo and the embedder) can include them.
+  public_deps += [
+    "//flutter/lib/ui/swift:swift_bridge_engine_registry",
+    "//flutter/lib/ui/swift:swift_runtime_controller",
   ]
 
   if (impeller_supports_rendering) {
@@ -366,5 +374,110 @@ if (enable_unittests) {
         "//flutter/third_party/swiftshader",
       ]
     }
+  }
+}
+
+if (is_mac) {
+  # flutter_swift directory is at the workspace root, two levels above the
+  # GN source root (engine/src/).
+  _flutter_swift_dir = rebase_path("//../../flutter_swift")
+
+  action("build_swift_demo") {
+    script = "build_swift_demo.py"
+
+    # The swift_package_dir containing the Swift Package.
+    _swift_package_dir =
+        rebase_path("//../../flutter_swift", root_build_dir)
+
+    inputs = [
+      "${_flutter_swift_dir}/Sources/SwiftRuntime/SwiftRuntimeDelegate.swift",
+      "${_flutter_swift_dir}/Sources/SwiftRuntime/SwiftRuntimeCallbackTable.swift",
+      "${_flutter_swift_dir}/Sources/SwiftRuntime/BlueScreenSetup.swift",
+      "${_flutter_swift_dir}/Sources/FlutterSwiftBridge/PlatformDispatcher.swift",
+    ]
+
+    outputs = [
+      "$target_gen_dir/libSwiftDemo.a",
+      "$target_gen_dir/SwiftRuntime-Swift.h",
+    ]
+
+    args = [
+      rebase_path("$target_gen_dir/libSwiftDemo.a", root_build_dir),
+      rebase_path("$target_gen_dir/SwiftRuntime-Swift.h", root_build_dir),
+      _swift_package_dir,
+    ]
+  }
+
+  executable("blue_screen_demo") {
+    testonly = true
+
+    sources = [
+      "blue_screen_demo.mm",
+
+      # Test infrastructure sources compiled directly (not via
+      # shell_test_fixture_sources) to avoid pulling in //flutter/testing
+      # which contains run_all_unittests.cc with its own main().
+      "shell_test_external_view_embedder.cc",
+      "shell_test_external_view_embedder.h",
+      "shell_test_platform_view.cc",
+      "shell_test_platform_view.h",
+      "shell_test_platform_view_metal.h",
+      "shell_test_platform_view_metal.mm",
+      "vsync_waiters_demo.cc",
+      "vsync_waiters_test.h",
+    ]
+
+    deps = [
+      ":build_swift_demo",
+      "//flutter/common/graphics",
+      "//flutter/flow",
+      "//flutter/impeller",
+      "//flutter/lib/ui/swift:swift_bridge",
+      "//flutter/lib/ui/swift:swift_runtime_controller",
+      "//flutter/runtime",
+      "//flutter/runtime:libdart",
+      "//flutter/shell/common",
+      "//flutter/shell/gpu:gpu_surface_metal",
+      "//flutter/shell/platform/darwin/graphics",
+      "//flutter/third_party/tonic",
+    ]
+
+    defines = [ "SHELL_ENABLE_METAL" ]
+
+    # Include dir for generated SwiftRuntime-Swift.h
+    include_dirs = [ "$target_gen_dir" ]
+
+    # The generated SwiftRuntime-Swift.h includes <swiftToCxx/...> headers
+    # and <swift/bridging> from the Swift toolchain.
+    _toolchain_path = getenv("HOME") + "/Library/Developer/Toolchains/swift-6.2.1-RELEASE.xctoolchain"
+    cflags_objc = flutter_cflags_objc
+    cflags_objcc = flutter_cflags_objcc + [
+      "-std=c++20",
+      "-isystem",
+      "${_toolchain_path}/usr/include",
+      "-isystem",
+      "${_toolchain_path}/usr/lib/swift",
+    ]
+
+    # Link the Swift demo static library
+    libs = [ "$target_gen_dir/libSwiftDemo.a" ]
+
+    # Swift runtime linking + export SwiftBridgeEngineRegistry symbols so
+    # libswift_bridge.dylib can resolve them at load time.
+    ldflags = [
+      "-lswiftCore",
+      "-L${_toolchain_path}/usr/lib/swift/macosx",
+      "-rpath",
+      "${_toolchain_path}/usr/lib/swift/macosx",
+      "-Xlinker",
+      "-exported_symbols_list",
+      "-Xlinker",
+      rebase_path("exported_symbols_demo_mac.sym", root_build_dir),
+    ]
+
+    frameworks = [
+      "Metal.framework",
+      "Foundation.framework",
+    ]
   }
 }

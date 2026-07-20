@@ -1,0 +1,85 @@
+# Copyright 2013 The Flutter Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+assert(is_linux)
+
+source_set("flutter_linux_drm_sources") {
+  sources = [
+    "fl_drm_cursor.cc",
+    "fl_drm_display.cc",
+    "fl_drm_egl.cc",
+    "fl_drm_engine.cc",
+    "fl_drm_gbm.cc",
+    "fl_drm_input.cc",
+    "fl_drm_seat.cc",
+    "fl_drm_swap_chain.cc",
+    "fl_drm_task_runner.cc",
+    "fl_drm_view.cc",
+  ]
+
+  public = [ "fl_drm_view.h" ]
+
+  defines = [ "FLUTTER_LINUX_DRM_COMPILATION" ]
+
+  deps = [
+    "//flutter/shell/platform/embedder:embedder_headers",
+  ]
+
+  public_configs = [ "//flutter:config" ]
+
+  include_dirs = [
+    "//flutter/shell/platform/embedder",
+  ]
+
+  # libdrm headers are in <sysroot>/usr/include/libdrm/ but xf86drm.h
+  # does #include <drm.h>, so we need the libdrm dir on the include path.
+  cflags = [ "-isystem" + rebase_path(
+      "//build/linux/debian_bullseye_amd64-sysroot/usr/include/libdrm",
+      root_build_dir) ]
+
+  libs = [
+    "drm",
+    "gbm",
+    "EGL",
+    "GLESv2",
+    "input",
+    "udev",
+    "xkbcommon",
+    "dl",
+  ]
+}
+
+shared_library("flutter_linux_drm") {
+  deps = [
+    ":flutter_linux_drm_sources",
+    "//flutter/shell/platform/embedder:flutter_engine",
+  ]
+
+  ldflags = [
+    "-Wl,--version-script=" +
+        rebase_path("drm_exports.lst", root_build_dir),
+    "-Wl,-rpath,\$ORIGIN",
+    # Flutter engine symbols (FlutterEngineInitializeSwift, etc.) are
+    # provided by libflutter_engine.so at runtime, loaded by the
+    # executable that links both libraries.
+    # Link against libflutter_engine.so in the output directory for
+    # Flutter embedder API symbols.
+    "-L" + rebase_path("$root_out_dir"),
+    "-lflutter_engine",
+  ]
+
+  public_configs = [ "//flutter:config" ]
+}
+
+copy("publish_headers_drm") {
+  sources = [ "fl_drm_view.h" ]
+  outputs = [ "$root_out_dir/flutter_linux_drm/{{source_file_part}}" ]
+}
+
+group("linux_drm") {
+  deps = [
+    ":flutter_linux_drm",
+    ":publish_headers_drm",
+  ]
+}

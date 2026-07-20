@@ -24,6 +24,7 @@
 #include "flutter/runtime/dart_vm.h"
 #include "flutter/runtime/platform_data.h"
 #include "flutter/runtime/platform_isolate_manager.h"
+#include "flutter/runtime/runtime_controller_interface.h"
 
 namespace flutter {
 
@@ -47,7 +48,8 @@ class Window;
 /// `RuntimeController` and flushed to the Dart VM when the isolate becomes
 /// ready before the entrypoint function. See `PlatformData`.
 ///
-class RuntimeController : public PlatformConfigurationClient,
+class RuntimeController : public RuntimeControllerInterface,
+                          public PlatformConfigurationClient,
                           PointerDataPacketConverter::Delegate {
  public:
   /// A callback that's invoked after this `RuntimeController` attempts to
@@ -163,6 +165,7 @@ class RuntimeController : public PlatformConfigurationClient,
   /// @return     If the isolate could be launched and guided to the
   ///             `DartIsolate::Phase::Running` phase.
   ///
+  // |RuntimeControllerInterface|
   [[nodiscard]] bool LaunchRootIsolate(
       const Settings& settings,
       const fml::closure& root_isolate_create_callback,
@@ -171,7 +174,7 @@ class RuntimeController : public PlatformConfigurationClient,
       const std::vector<std::string>& dart_entrypoint_args,
       std::unique_ptr<IsolateConfiguration> isolate_configuration,
       std::shared_ptr<NativeAssetsManager> native_assets_manager,
-      std::optional<int64_t> engine_id);
+      std::optional<int64_t> engine_id) override;
 
   //----------------------------------------------------------------------------
   /// @brief      Clone the runtime controller. Launching an isolate with a
@@ -205,9 +208,10 @@ class RuntimeController : public PlatformConfigurationClient,
   /// @param[in]  callback          Callback that will be invoked after the add
   ///                               operation is attempted or cancelled.
   ///
+  // |RuntimeControllerInterface|
   void AddView(int64_t view_id,
                const ViewportMetrics& view_metrics,
-               AddViewCallback callback);
+               AddViewCallback callback) override;
 
   //----------------------------------------------------------------------------
   /// @brief      Notify the isolate that a view is no longer available.
@@ -227,14 +231,16 @@ class RuntimeController : public PlatformConfigurationClient,
   ///             isolate. False if the view does not exist. If the Dart isolate
   ///             is not running, then the pending view creation (if any) is
   ///             cancelled and the return value is always false.
-  bool RemoveView(int64_t view_id);
+  // |RuntimeControllerInterface|
+  bool RemoveView(int64_t view_id) override;
 
   //----------------------------------------------------------------------------
   /// @brief      Notify the isolate that the focus state of a native view has
   ///             changed.
   ///
   /// @param[in]  event  The focus event describing the change.
-  bool SendViewFocusEvent(const ViewFocusEvent& event);
+  // |RuntimeControllerInterface|
+  bool SendViewFocusEvent(const ViewFocusEvent& event) override;
 
   //----------------------------------------------------------------------------
   /// @brief      Forward the specified viewport metrics to the running isolate.
@@ -246,7 +252,9 @@ class RuntimeController : public PlatformConfigurationClient,
   ///
   /// @return     If the window metrics were forwarded to the running isolate.
   ///
-  bool SetViewportMetrics(int64_t view_id, const ViewportMetrics& metrics);
+  // |RuntimeControllerInterface|
+  bool SetViewportMetrics(int64_t view_id,
+                          const ViewportMetrics& metrics) override;
 
   //----------------------------------------------------------------------------
   /// @brief      Forward the specified display metrics to the running isolate.
@@ -254,7 +262,8 @@ class RuntimeController : public PlatformConfigurationClient,
   ///             flushed to the isolate when it starts.
   ///
   /// @param[in]  displays  The available displays.
-  bool SetDisplays(const std::vector<DisplayData>& displays);
+  // |RuntimeControllerInterface|
+  bool SetDisplays(const std::vector<DisplayData>& displays) override;
 
   //----------------------------------------------------------------------------
   /// @brief      Forward the specified locale data to the running isolate. If
@@ -269,7 +278,8 @@ class RuntimeController : public PlatformConfigurationClient,
   ///
   /// @return     If the locale data was forwarded to the running isolate.
   ///
-  bool SetLocales(const std::vector<std::string>& locale_data);
+  // |RuntimeControllerInterface|
+  bool SetLocales(const std::vector<std::string>& locale_data) override;
 
   //----------------------------------------------------------------------------
   /// @brief      Forward the user settings data to the running isolate. If the
@@ -284,7 +294,8 @@ class RuntimeController : public PlatformConfigurationClient,
   /// @return     If the user settings data was forwarded to the running
   ///             isolate.
   ///
-  bool SetUserSettingsData(const std::string& data);
+  // |RuntimeControllerInterface|
+  bool SetUserSettingsData(const std::string& data) override;
 
   //----------------------------------------------------------------------------
   /// @brief      Forward the initial lifecycle state data to the running
@@ -301,7 +312,8 @@ class RuntimeController : public PlatformConfigurationClient,
   /// @return     If the lifecycle state data was forwarded to the running
   ///             isolate.
   ///
-  bool SetInitialLifecycleState(const std::string& data);
+  // |RuntimeControllerInterface|
+  bool SetInitialLifecycleState(const std::string& data) override;
 
   //----------------------------------------------------------------------------
   /// @brief      Notifies the running isolate about whether the semantics tree
@@ -314,7 +326,8 @@ class RuntimeController : public PlatformConfigurationClient,
   /// @return     If the semantics tree generation preference was forwarded to
   ///             the running isolate.
   ///
-  bool SetSemanticsEnabled(bool enabled);
+  // |RuntimeControllerInterface|
+  bool SetSemanticsEnabled(bool enabled) override;
 
   //----------------------------------------------------------------------------
   /// @brief      Forward the preference of accessibility features that must be
@@ -328,7 +341,8 @@ class RuntimeController : public PlatformConfigurationClient,
   /// @return     If the preference of accessibility features was forwarded to
   ///             the running isolate.
   ///
-  bool SetAccessibilityFeatures(int32_t flags);
+  // |RuntimeControllerInterface|
+  bool SetAccessibilityFeatures(int32_t flags) override;
 
   //----------------------------------------------------------------------------
   /// @brief      Notifies the running isolate that it should start generating a
@@ -343,7 +357,9 @@ class RuntimeController : public PlatformConfigurationClient,
   /// @return     If notification to begin frame rendering was delivered to the
   ///             running isolate.
   ///
-  bool BeginFrame(fml::TimePoint frame_time, uint64_t frame_number);
+  // |RuntimeControllerInterface|
+  bool BeginFrame(fml::TimePoint frame_time,
+                  uint64_t frame_number) override;
 
   //----------------------------------------------------------------------------
   /// @brief      Dart code cannot fully measure the time it takes for a
@@ -371,7 +387,8 @@ class RuntimeController : public PlatformConfigurationClient,
   ///                      are measured against the system monotonic clock
   ///                      measured in microseconds.
   ///
-  bool ReportTimings(std::vector<int64_t> timings);
+  // |RuntimeControllerInterface|
+  bool ReportTimings(std::vector<int64_t> timings) override;
 
   //----------------------------------------------------------------------------
   /// @brief      Notify the Dart VM that no frame workloads are expected on the
@@ -442,7 +459,8 @@ class RuntimeController : public PlatformConfigurationClient,
   ///
   /// @return     If the idle notification was forwarded to the running isolate.
   ///
-  virtual bool NotifyIdle(fml::TimeDelta deadline);
+  // |RuntimeControllerInterface|
+  bool NotifyIdle(fml::TimeDelta deadline) override;
 
   //----------------------------------------------------------------------------
   /// @brief      Returns if the root isolate is running. The isolate must be
@@ -451,7 +469,8 @@ class RuntimeController : public PlatformConfigurationClient,
   ///
   /// @return     True if root isolate running, False otherwise.
   ///
-  virtual bool IsRootIsolateRunning() const;
+  // |RuntimeControllerInterface|
+  bool IsRootIsolateRunning() const override;
 
   //----------------------------------------------------------------------------
   /// @brief      Dispatch the specified platform message to running root
@@ -462,8 +481,9 @@ class RuntimeController : public PlatformConfigurationClient,
   /// @return     If the message was dispatched to the running root isolate.
   ///             This may fail is an isolate is not running.
   ///
-  virtual bool DispatchPlatformMessage(
-      std::unique_ptr<PlatformMessage> message);
+  // |RuntimeControllerInterface|
+  bool DispatchPlatformMessage(
+      std::unique_ptr<PlatformMessage> message) override;
 
   //----------------------------------------------------------------------------
   /// @brief      Dispatch the specified pointer data message to the running
@@ -474,7 +494,8 @@ class RuntimeController : public PlatformConfigurationClient,
   /// @return     If the pointer data message was dispatched. This may fail is
   ///             an isolate is not running.
   ///
-  bool DispatchPointerDataPacket(const PointerDataPacket& packet);
+  // |RuntimeControllerInterface|
+  bool DispatchPointerDataPacket(const PointerDataPacket& packet) override;
 
   //----------------------------------------------------------------------------
   /// @brief      Dispatch the semantics action to the specified accessibility
@@ -489,10 +510,11 @@ class RuntimeController : public PlatformConfigurationClient,
   /// @return     If the semantics action was dispatched. This may fail if an
   ///             isolate is not running.
   ///
+  // |RuntimeControllerInterface|
   bool DispatchSemanticsAction(int64_t view_id,
                                int32_t node_id,
                                SemanticsAction action,
-                               fml::MallocMapping args);
+                               fml::MallocMapping args) override;
 
   //----------------------------------------------------------------------------
   /// @brief      Gets the main port identifier of the root isolate.
@@ -500,7 +522,8 @@ class RuntimeController : public PlatformConfigurationClient,
   /// @return     The main port identifier. If no root isolate is running,
   ///             returns `ILLEGAL_PORT`.
   ///
-  Dart_Port GetMainPort();
+  // |RuntimeControllerInterface|
+  Dart_Port GetMainPort() override;
 
   //----------------------------------------------------------------------------
   /// @brief      Gets the debug name of the root isolate. But default, the
@@ -515,7 +538,8 @@ class RuntimeController : public PlatformConfigurationClient,
   ///
   /// @return     The debug name of the root isolate.
   ///
-  std::string GetIsolateName();
+  // |RuntimeControllerInterface|
+  std::string GetIsolateName() override;
 
   //----------------------------------------------------------------------------
   /// @brief      Returns if the root isolate has any live receive ports.
@@ -523,7 +547,8 @@ class RuntimeController : public PlatformConfigurationClient,
   /// @return     True if there are live receive ports, False otherwise. Return
   ///             False if the root isolate is not running as well.
   ///
-  bool HasLivePorts();
+  // |RuntimeControllerInterface|
+  bool HasLivePorts() override;
 
   //----------------------------------------------------------------------------
   /// @brief      Returns if the root isolate has any pending microtasks.
@@ -532,14 +557,16 @@ class RuntimeController : public PlatformConfigurationClient,
   ///             run, False otherwise. Return False if the root isolate is not
   ///             running as well.
   ///
-  bool HasPendingMicrotasks();
+  // |RuntimeControllerInterface|
+  bool HasPendingMicrotasks() override;
 
   //----------------------------------------------------------------------------
   /// @brief      Get the last error encountered by the microtask queue.
   ///
   /// @return     The last error encountered by the microtask queue.
   ///
-  tonic::DartErrorHandleType GetLastError();
+  // |RuntimeControllerInterface|
+  tonic::DartErrorHandleType GetLastError() override;
 
   //----------------------------------------------------------------------------
   /// @brief      Get the service ID of the root isolate if the root isolate is
@@ -547,7 +574,8 @@ class RuntimeController : public PlatformConfigurationClient,
   ///
   /// @return     The root isolate service id.
   ///
-  std::optional<std::string> GetRootIsolateServiceID() const;
+  // |RuntimeControllerInterface|
+  std::optional<std::string> GetRootIsolateServiceID() const override;
 
   //----------------------------------------------------------------------------
   /// @brief      Get the return code specified by the root isolate (if one is
@@ -555,7 +583,8 @@ class RuntimeController : public PlatformConfigurationClient,
   ///
   /// @return     The root isolate return code if the isolate has specified one.
   ///
-  std::optional<uint32_t> GetRootIsolateReturnCode();
+  // |RuntimeControllerInterface|
+  std::optional<uint32_t> GetRootIsolateReturnCode() override;
 
   //----------------------------------------------------------------------------
   /// @brief      Get an identifier that represents the Dart isolate group the
@@ -563,7 +592,8 @@ class RuntimeController : public PlatformConfigurationClient,
   ///
   /// @return     The root isolate group identifier, zero if one can't
   ///             be established.
-  uint64_t GetRootIsolateGroup() const;
+  // |RuntimeControllerInterface|
+  uint64_t GetRootIsolateGroup() const override;
 
   //--------------------------------------------------------------------------
   /// @brief      Loads the Dart shared library into the Dart VM. When the
@@ -596,10 +626,11 @@ class RuntimeController : public PlatformConfigurationClient,
   /// @param[in]  snapshot_data    Dart snapshot instructions of the loading
   ///                              unit's shared library.
   ///
+  // |RuntimeControllerInterface|
   void LoadDartDeferredLibrary(
       intptr_t loading_unit_id,
       std::unique_ptr<const fml::Mapping> snapshot_data,
-      std::unique_ptr<const fml::Mapping> snapshot_instructions);
+      std::unique_ptr<const fml::Mapping> snapshot_instructions) override;
 
   //--------------------------------------------------------------------------
   /// @brief      Indicates to the dart VM that the request to load a deferred
@@ -623,9 +654,10 @@ class RuntimeController : public PlatformConfigurationClient,
   ///                              errors are permanent and attempts to
   ///                              re-request the library will instantly
   ///                              complete with an error.
-  virtual void LoadDartDeferredLibraryError(intptr_t loading_unit_id,
-                                            const std::string error_message,
-                                            bool transient);
+  // |RuntimeControllerInterface|
+  void LoadDartDeferredLibraryError(intptr_t loading_unit_id,
+                                    const std::string error_message,
+                                    bool transient) override;
 
   // |PlatformConfigurationClient|
   void RequestDartDeferredLibrary(intptr_t loading_unit_id) override;
@@ -667,7 +699,8 @@ class RuntimeController : public PlatformConfigurationClient,
     return root_isolate_;
   }
 
-  void FlushMicrotaskQueue() {
+  // |RuntimeControllerInterface|
+  void FlushMicrotaskQueue() override {
     if (auto isolate = root_isolate_.lock()) {
       isolate->FlushMicrotasksNow();
     }
@@ -677,13 +710,15 @@ class RuntimeController : public PlatformConfigurationClient,
     return platform_isolate_manager_;
   }
 
-  void SetRootIsolateOwnerToCurrentThread();
+  // |RuntimeControllerInterface|
+  void SetRootIsolateOwnerToCurrentThread() override;
 
   //--------------------------------------------------------------------------
   /// @brief      Shuts down all registered platform isolates. Must be called
   ///             from the platform thread.
   ///
-  void ShutdownPlatformIsolates();
+  // |RuntimeControllerInterface|
+  void ShutdownPlatformIsolates() override;
 
  protected:
   /// Constructor for Mocks.

@@ -20,6 +20,7 @@
 #include "third_party/skia/include/gpu/ganesh/SkSurfaceGanesh.h"
 #include "third_party/skia/include/gpu/ganesh/gl/GrGLBackendSurface.h"
 #include "third_party/skia/include/gpu/ganesh/gl/GrGLDirectContext.h"
+#include "third_party/skia/include/gpu/ganesh/gl/GrGLInterface.h"
 #include "third_party/skia/include/gpu/ganesh/gl/GrGLTypes.h"
 
 // These are common defines present on all OpenGL headers. However, we don't
@@ -29,6 +30,7 @@
 #define GPU_GL_RGBA8 0x8058
 #define GPU_GL_RGBA4 0x8056
 #define GPU_GL_RGB565 0x8D62
+#define GPU_GL_STENCIL_BITS 0x0D57
 
 namespace flutter {
 
@@ -131,7 +133,8 @@ static SkColorType FirstSupportedColorType(GrDirectContext* context,
 
 static sk_sp<SkSurface> WrapOnscreenSurface(GrDirectContext* context,
                                             const DlISize& size,
-                                            intptr_t fbo) {
+                                            intptr_t fbo,
+                                            int stencil_bits) {
   GrGLenum format = kUnknown_SkColorType;
   const SkColorType color_type = FirstSupportedColorType(context, &format);
 
@@ -143,7 +146,7 @@ static sk_sp<SkSurface> WrapOnscreenSurface(GrDirectContext* context,
       GrBackendRenderTargets::MakeGL(size.width,       // width
                                      size.height,      // height
                                      0,                // sample count
-                                     0,                // stencil bits
+                                     stencil_bits,     // stencil bits
                                      framebuffer_info  // framebuffer info
       );
 
@@ -185,9 +188,30 @@ bool GPUSurfaceGLSkia::CreateOrUpdateSurfaces(const DlISize& size) {
   GLFrameInfo frame_info = {static_cast<uint32_t>(size.width),
                             static_cast<uint32_t>(size.height)};
   const GLFBOInfo fbo_info = delegate_->GLContextFBO(frame_info);
-  onscreen_surface = WrapOnscreenSurface(context_.get(),  // GL context
-                                         size,            // root surface size
-                                         fbo_info.fbo_id  // window FBO ID
+
+  // The FBO callback may have changed GL state (created new FBO, textures,
+  // renderbuffers). Tell Skia to re-query all GL state so it doesn't use
+  // stale tracked values (e.g., viewport, scissor, FBO binding).
+  context_->resetContext();
+
+  // Query stencil bits once from the actual GL surface.  Borrowed FBOs (like
+  // FBO 0 from EGL) can't have stencil attached by Skia, so the backend
+  // render target must report the correct pre-existing stencil bits.
+  if (surface_stencil_bits_ < 0) {
+    surface_stencil_bits_ = 0;
+    auto gl_interface = delegate_->GetGLInterface();
+    if (gl_interface && gl_interface->fFunctions.fGetIntegerv) {
+      int32_t bits = 0;
+      gl_interface->fFunctions.fGetIntegerv(GPU_GL_STENCIL_BITS, &bits);
+      surface_stencil_bits_ = bits;
+    }
+    FML_LOG(INFO) << "Surface stencil bits: " << surface_stencil_bits_;
+  }
+
+  onscreen_surface = WrapOnscreenSurface(context_.get(),       // GL context
+                                         size,                 // root surface size
+                                         fbo_info.fbo_id,      // window FBO ID
+                                         surface_stencil_bits_  // stencil bits
   );
 
   if (onscreen_surface == nullptr) {
@@ -299,9 +323,10 @@ bool GPUSurfaceGLSkia::PresentSurface(const SurfaceFrame& frame) {
     // re-wrap.
     const GLFBOInfo fbo_info = delegate_->GLContextFBO(frame_info);
     auto new_onscreen_surface =
-        WrapOnscreenSurface(context_.get(),  // GL context
-                            current_size,    // root surface size
-                            fbo_info.fbo_id  // window FBO ID
+        WrapOnscreenSurface(context_.get(),       // GL context
+                            current_size,          // root surface size
+                            fbo_info.fbo_id,       // window FBO ID
+                            surface_stencil_bits_  // stencil bits
         );
 
     if (!new_onscreen_surface) {

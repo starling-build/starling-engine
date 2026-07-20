@@ -2779,6 +2779,12 @@ typedef struct {
   size_t data_length;
 } FlutterSendSemanticsActionInfo;
 
+//------------------------------------------------------------------------------
+/// @brief      Pointer to a SwiftRuntimeCallbacks struct for Swift mode.
+///             The struct is defined in swift_runtime_callbacks.h.
+///
+typedef const void* FlutterRuntimeController;
+
 #ifndef FLUTTER_ENGINE_NO_PROTOTYPES
 
 // NOLINTBEGIN(google-objc-function-naming)
@@ -3558,6 +3564,43 @@ FlutterEngineResult FlutterEngineSetNextFrameCallback(
     VoidCallback callback,
     void* user_data);
 
+//------------------------------------------------------------------------------
+/// @brief      Initializes a Flutter engine instance in Swift mode (no Dart VM).
+///             This is analogous to FlutterEngineInitialize but takes a
+///             FlutterRuntimeController instead of setting up Dart snapshots.
+///
+/// @param[in]  version              Must be FLUTTER_ENGINE_VERSION.
+/// @param[in]  config               The renderer configuration.
+/// @param[in]  args                 The Flutter project arguments.
+/// @param[in]  user_data            A user data baton passed to callbacks.
+/// @param[in]  runtime_controller   An opaque RuntimeControllerInterface*.
+///                                  Ownership is transferred to the engine.
+/// @param[out] engine_out           On success, the engine handle.
+///
+/// @return     The result of the call.
+///
+FLUTTER_EXPORT
+FlutterEngineResult FlutterEngineInitializeSwift(
+    size_t version,
+    const FlutterRendererConfig* config,
+    const FlutterProjectArgs* args,
+    void* user_data,
+    FlutterRuntimeController runtime_controller,
+    FLUTTER_API_SYMBOL(FlutterEngine)* engine_out);
+
+//------------------------------------------------------------------------------
+/// @brief      Runs an initialized Swift-mode engine. Launches the shell and
+///             notifies the platform view, but does not run a Dart isolate.
+///
+/// @param[in]  engine  A Flutter engine instance that was initialized with
+///                     FlutterEngineInitializeSwift.
+///
+/// @return     The result of the call.
+///
+FLUTTER_EXPORT
+FlutterEngineResult FlutterEngineRunInitializedSwift(
+    FLUTTER_API_SYMBOL(FlutterEngine) engine);
+
 #endif  // !FLUTTER_ENGINE_NO_PROTOTYPES
 
 // Typedefs for the function pointers in FlutterEngineProcTable.
@@ -3692,6 +3735,15 @@ typedef FlutterEngineResult (*FlutterEngineRemoveViewFnPtr)(
 typedef FlutterEngineResult (*FlutterEngineSendViewFocusEventFnPtr)(
     FLUTTER_API_SYMBOL(FlutterEngine) engine,
     const FlutterViewFocusEvent* event);
+typedef FlutterEngineResult (*FlutterEngineInitializeSwiftFnPtr)(
+    size_t version,
+    const FlutterRendererConfig* config,
+    const FlutterProjectArgs* args,
+    void* user_data,
+    FlutterRuntimeController runtime_controller,
+    FLUTTER_API_SYMBOL(FlutterEngine)* engine_out);
+typedef FlutterEngineResult (*FlutterEngineRunInitializedSwiftFnPtr)(
+    FLUTTER_API_SYMBOL(FlutterEngine) engine);
 
 /// Function-pointer-based versions of the APIs above.
 typedef struct {
@@ -3742,6 +3794,8 @@ typedef struct {
   FlutterEngineRemoveViewFnPtr RemoveView;
   FlutterEngineSendViewFocusEventFnPtr SendViewFocusEvent;
   FlutterEngineSendSemanticsActionFnPtr SendSemanticsAction;
+  FlutterEngineInitializeSwiftFnPtr InitializeSwift;
+  FlutterEngineRunInitializedSwiftFnPtr RunInitializedSwift;
 } FlutterEngineProcTable;
 
 //------------------------------------------------------------------------------

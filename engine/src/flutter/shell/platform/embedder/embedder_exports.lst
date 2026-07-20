@@ -15,6 +15,13 @@
     kDartVmSnapshotInstructions;
     InternalFlutterGpu*;
     kInternalFlutterGpu*;
+    # Swift bridge (all symbols in flutter::swift_bridge namespace)
+    # _ZN = non-const methods, _ZNK = const methods
+    _ZN7flutter12swift_bridge*;
+    _ZNK7flutter12swift_bridge*;
+
+    # DRM shell public API
+    fl_drm_view_*;
   local:
     *;
 };

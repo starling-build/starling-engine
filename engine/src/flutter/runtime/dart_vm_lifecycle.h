@@ -32,6 +32,10 @@ class DartVMRef {
       fml::RefPtr<const DartSnapshot> vm_snapshot = nullptr,
       fml::RefPtr<const DartSnapshot> isolate_snapshot = nullptr);
 
+  /// Default constructor creates a null DartVMRef (no VM reference).
+  /// Used by the Swift runtime path where no DartVM is needed.
+  DartVMRef() = default;
+
   DartVMRef(const DartVMRef&) = default;
 
   DartVMRef(DartVMRef&&);

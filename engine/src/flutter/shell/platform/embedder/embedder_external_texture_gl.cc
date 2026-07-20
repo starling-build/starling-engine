@@ -105,7 +105,7 @@ sk_sp<DlImage> EmbedderExternalTextureGL::ResolveTextureSkia(
   auto image =
       SkImages::BorrowTextureFrom(context,                   // context
                                   gr_backend_texture,        // texture handle
-                                  kTopLeft_GrSurfaceOrigin,  // origin
+                                  kBottomLeft_GrSurfaceOrigin,  // origin
                                   kRGBA_8888_SkColorType,    // color type
                                   kPremul_SkAlphaType,       // alpha type
                                   nullptr,                   // colorspace

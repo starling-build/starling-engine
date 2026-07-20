@@ -14,6 +14,9 @@
 #include "flutter/shell/platform/embedder/embedder.h"
 #include "flutter/shell/platform/embedder/embedder_external_texture_resolver.h"
 #include "flutter/shell/platform/embedder/embedder_thread_host.h"
+
+#include "flutter/runtime/runtime_controller_interface.h"
+
 namespace flutter {
 
 struct ShellArgs;
@@ -32,9 +35,23 @@ class EmbedderEngine {
       std::unique_ptr<EmbedderExternalTextureResolver>
           external_texture_resolver);
 
+  // Swift mode constructor — takes a RuntimeControllerInterface instead of
+  // RunConfiguration.  No Dart VM will be started.
+  EmbedderEngine(
+      std::unique_ptr<EmbedderThreadHost> thread_host,
+      const TaskRunners& task_runners,
+      const Settings& settings,
+      const Shell::CreateCallback<PlatformView>& on_create_platform_view,
+      const Shell::CreateCallback<Rasterizer>& on_create_rasterizer,
+      std::unique_ptr<EmbedderExternalTextureResolver>
+          external_texture_resolver,
+      std::unique_ptr<RuntimeControllerInterface> runtime_controller);
+
   ~EmbedderEngine();
 
   bool LaunchShell();
+
+  bool LaunchShellSwift();
 
   bool CollectShell();
 
@@ -97,6 +114,7 @@ class EmbedderEngine {
   std::unique_ptr<ShellArgs> shell_args_;
   std::unique_ptr<Shell> shell_;
   std::unique_ptr<EmbedderExternalTextureResolver> external_texture_resolver_;
+  std::unique_ptr<RuntimeControllerInterface> runtime_controller_;
 
   FML_DISALLOW_COPY_AND_ASSIGN(EmbedderEngine);
 };

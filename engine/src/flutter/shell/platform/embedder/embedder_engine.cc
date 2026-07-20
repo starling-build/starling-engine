@@ -5,6 +5,7 @@
 #include "flutter/shell/platform/embedder/embedder_engine.h"
 
 #include "flutter/fml/make_copyable.h"
+#include "flutter/runtime/runtime_controller_interface.h"
 #include "flutter/shell/platform/embedder/vsync_waiter_embedder.h"
 
 namespace flutter {
@@ -37,6 +38,23 @@ EmbedderEngine::EmbedderEngine(
                                               on_create_rasterizer)),
       external_texture_resolver_(std::move(external_texture_resolver)) {}
 
+EmbedderEngine::EmbedderEngine(
+    std::unique_ptr<EmbedderThreadHost> thread_host,
+    const flutter::TaskRunners& task_runners,
+    const flutter::Settings& settings,
+    const Shell::CreateCallback<PlatformView>& on_create_platform_view,
+    const Shell::CreateCallback<Rasterizer>& on_create_rasterizer,
+    std::unique_ptr<EmbedderExternalTextureResolver> external_texture_resolver,
+    std::unique_ptr<RuntimeControllerInterface> runtime_controller)
+    : thread_host_(std::move(thread_host)),
+      task_runners_(task_runners),
+      run_configuration_(RunConfiguration::InferFromSettings(settings)),
+      shell_args_(std::make_unique<ShellArgs>(settings,
+                                              on_create_platform_view,
+                                              on_create_rasterizer)),
+      external_texture_resolver_(std::move(external_texture_resolver)),
+      runtime_controller_(std::move(runtime_controller)) {}
+
 EmbedderEngine::~EmbedderEngine() = default;
 
 bool EmbedderEngine::LaunchShell() {
@@ -52,6 +70,29 @@ bool EmbedderEngine::LaunchShell() {
   shell_ = Shell::Create(
       flutter::PlatformData(), task_runners_, shell_args_->settings,
       shell_args_->on_create_platform_view, shell_args_->on_create_rasterizer);
+
+  // Reset the args no matter what. They will never be used to initialize a
+  // shell again.
+  shell_args_.reset();
+
+  return IsValid();
+}
+
+bool EmbedderEngine::LaunchShellSwift() {
+  if (!shell_args_ || !runtime_controller_) {
+    FML_DLOG(ERROR) << "Invalid shell arguments or missing runtime controller.";
+    return false;
+  }
+
+  if (shell_) {
+    FML_DLOG(ERROR) << "Shell already initialized";
+    return false;
+  }
+
+  shell_ = Shell::CreateSwift(
+      flutter::PlatformData{}, task_runners_, shell_args_->settings,
+      shell_args_->on_create_platform_view, shell_args_->on_create_rasterizer,
+      std::move(runtime_controller_));
 
   // Reset the args no matter what. They will never be used to initialize a
   // shell again.
@@ -323,10 +364,12 @@ bool EmbedderEngine::PostTaskOnEngineManagedNativeThreads(
   trampoline(kFlutterNativeThreadTypePlatform,
              task_runners.GetPlatformTaskRunner());
 
-  // Post the task to all worker threads.
+  // Post the task to all worker threads (only when Dart VM is available).
   auto vm = shell_->GetDartVM();
-  vm->GetConcurrentMessageLoop()->PostTaskToAllWorkers(
-      [closure]() { closure(kFlutterNativeThreadTypeWorker); });
+  if (vm) {
+    vm->GetConcurrentMessageLoop()->PostTaskToAllWorkers(
+        [closure]() { closure(kFlutterNativeThreadTypeWorker); });
+  }
 
   return true;
 }

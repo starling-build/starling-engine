@@ -38,6 +38,7 @@ std::optional<DlRect> FrameDamage::ComputeClipRect(
     damage_ =
         context.ComputeDamage(additional_damage_, horizontal_clip_alignment_,
                               vertical_clip_alignment_);
+
     return DlRect::Make(damage_->buffer_damage);
   }
   return std::nullopt;

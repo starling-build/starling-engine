@@ -42,7 +42,7 @@ Engine::Engine(
     std::unique_ptr<Animator> animator,
     const fml::WeakPtr<IOManager>& io_manager,
     const std::shared_ptr<FontCollection>& font_collection,
-    std::unique_ptr<RuntimeController> runtime_controller,
+    std::unique_ptr<RuntimeControllerInterface> runtime_controller,
     const std::shared_ptr<fml::SyncSwitch>& gpu_disabled_switch)
     : delegate_(delegate),
       settings_(settings),
@@ -81,7 +81,7 @@ Engine::Engine(Delegate& delegate,
              std::move(animator),
              io_manager,
              std::make_shared<FontCollection>(),
-             nullptr,
+             std::unique_ptr<RuntimeControllerInterface>(nullptr),
              gpu_disabled_switch) {
   runtime_controller_ = std::make_unique<RuntimeController>(
       *this,                                 // runtime delegate
@@ -119,19 +119,23 @@ std::unique_ptr<Engine> Engine::Spawn(
     const fml::WeakPtr<IOManager>& io_manager,
     fml::TaskRunnerAffineWeakPtr<SnapshotDelegate> snapshot_delegate,
     const std::shared_ptr<fml::SyncSwitch>& gpu_disabled_switch) const {
+  // Spawn is a Dart-specific operation, so we need to downcast to
+  // RuntimeController to access GetDartVM() and Spawn().
+  const auto* dart_runtime_controller =
+      static_cast<const RuntimeController*>(runtime_controller_.get());
   auto result = std::make_unique<Engine>(
       /*delegate=*/delegate,
       /*dispatcher_maker=*/dispatcher_maker,
       /*image_decoder_task_runner=*/
-      runtime_controller_->GetDartVM()->GetConcurrentWorkerTaskRunner(),
+      dart_runtime_controller->GetDartVM()->GetConcurrentWorkerTaskRunner(),
       /*task_runners=*/task_runners_,
       /*settings=*/settings,
       /*animator=*/std::move(animator),
       /*io_manager=*/io_manager,
       /*font_collection=*/font_collection_,
-      /*runtime_controller=*/nullptr,
+      /*runtime_controller=*/std::unique_ptr<RuntimeControllerInterface>(nullptr),
       /*gpu_disabled_switch=*/gpu_disabled_switch);
-  result->runtime_controller_ = runtime_controller_->Spawn(
+  result->runtime_controller_ = dart_runtime_controller->Spawn(
       /*p_client=*/*result,
       /*advisory_script_uri=*/settings.advisory_script_uri,
       /*advisory_script_entrypoint=*/settings.advisory_script_entrypoint,
@@ -209,7 +213,10 @@ bool Engine::Restart(RunConfiguration configuration) {
     return false;
   }
   delegate_.OnPreEngineRestart();
-  runtime_controller_ = runtime_controller_->Clone();
+  // Clone is a Dart-specific operation, so we need to downcast to
+  // RuntimeController.
+  runtime_controller_ =
+      static_cast<RuntimeController*>(runtime_controller_.get())->Clone();
   UpdateAssetManager(nullptr);
   return Run(std::move(configuration)) == Engine::RunStatus::Success;
 }
