@@ -151,7 +151,33 @@ static sk_sp<SkSurface> WrapOnscreenSurface(GrDirectContext* context,
       );
 
   sk_sp<SkColorSpace> colorspace = SkColorSpace::MakeSRGB();
-  SkSurfaceProps surface_props(0, kUnknown_SkPixelGeometry);
+  // Starling: denser text antialiasing. Skia's default text contrast (0.5)
+  // leaves thin regular-weight strokes at partial coverage, which reads
+  // washed-out next to Chrome's gamma-corrected text on desktop panels.
+  // FLUTTER_TEXT_CONTRAST (0..1, non-empty) overrides the 1.0 default.
+  static const SkScalar text_contrast = [] {
+    const char* env = getenv("FLUTTER_TEXT_CONTRAST");
+    if (env != nullptr && env[0] != '\0') {
+      double v = atof(env);
+      if (v < 0.0) {
+        v = 0.0;
+      } else if (v > 1.0) {
+        v = 1.0;
+      }
+      return static_cast<SkScalar>(v);
+    }
+    return SkScalar(1.0);
+  }();
+  // FLUTTER_TEXT_LCD: declare RGB-horizontal pixel geometry so LCD subpixel
+  // text (see paragraph_builder_skia.cc) actually renders as such — with
+  // kUnknown geometry Skia silently falls back to grayscale AA.
+  static const SkPixelGeometry pixel_geometry = [] {
+    const char* env = getenv("FLUTTER_TEXT_LCD");
+    return (env != nullptr && env[0] != '\0') ? kRGB_H_SkPixelGeometry
+                                              : kUnknown_SkPixelGeometry;
+  }();
+  SkSurfaceProps surface_props(0, pixel_geometry, text_contrast,
+                               SK_GAMMA_EXPONENT);
 
   return SkSurfaces::WrapBackendRenderTarget(
       context,                                       // Gr context

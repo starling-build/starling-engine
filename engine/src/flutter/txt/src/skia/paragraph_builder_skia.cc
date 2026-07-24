@@ -143,6 +143,33 @@ skt::ParagraphStyle ParagraphBuilderSkia::TxtToSkia(const ParagraphStyle& txt) {
 skt::TextStyle ParagraphBuilderSkia::TxtToSkia(const TextStyle& txt) {
   skt::TextStyle skia;
 
+  // Starling: FLUTTER_TEXT_HINTING (non-empty) opts into grid-fitted text —
+  // normal hinting + integer glyph positions. Sharper stems at fractional
+  // device pixel ratios, at the cost of slightly uneven letter spacing.
+  // Default stays stock Flutter rendering (slight hinting + subpixel
+  // positions), which is the right call at integer scales like 2.0.
+  static const bool hinting_on = [] {
+    const char* env = getenv("FLUTTER_TEXT_HINTING");
+    return env != nullptr && env[0] != '\0';
+  }();
+  if (hinting_on) {
+    skia.setFontHinting(SkFontHinting::kNormal);
+    skia.setSubpixel(false);
+  }
+
+  // Starling: FLUTTER_TEXT_LCD (non-empty) opts into LCD subpixel
+  // antialiasing — GPUI/native-desktop style RGB-stripe coverage. Needs the
+  // render surface to declare its pixel geometry (gpu_surface_gl_skia.cc,
+  // same flag) and texel-exact compositing to survive to the panel; Skia
+  // auto-degrades to grayscale inside saveLayers and transformed content.
+  static const bool lcd_on = [] {
+    const char* env = getenv("FLUTTER_TEXT_LCD");
+    return env != nullptr && env[0] != '\0';
+  }();
+  if (lcd_on) {
+    skia.setFontEdging(SkFont::Edging::kSubpixelAntiAlias);
+  }
+
   skia.setColor(txt.color);
   skia.setDecoration(static_cast<skt::TextDecoration>(txt.decoration));
   skia.setDecorationColor(txt.decoration_color);
