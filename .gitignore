@@ -59,9 +59,7 @@
 /dev/integration_tests/**/xcuserdata
 /dev/integration_tests/**/Pods
 /packages/flutter/coverage/
-# Anchored: a bare `version` also matches engine/src/flutter/shell/version/,
-# which silently dropped that directory from the import snapshot.
-/version
+version
 analysis_benchmark.json
 
 # packages file containing multi-root paths
