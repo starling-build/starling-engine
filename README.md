@@ -34,11 +34,21 @@ still work.
 
 ## Build
 
-Hydrate DEPS once (needs depot_tools on PATH):
+Hydrate DEPS once (needs depot_tools on PATH). Copy
+`engine/scripts/standard.gclient` to `.gclient` with the URL pointed at this
+repo, then:
 
 ```bash
-# .gclient solution pointing at this repo, then:
 gclient sync
+```
+
+Generate the build files once — `out/` is untracked, so a fresh clone has no
+`args.gn`:
+
+```bash
+cd engine/src
+flutter/tools/gn --runtime-mode=debug   --no-lto --no-backtrace --no-rbe
+flutter/tools/gn --runtime-mode=release --no-lto --no-backtrace --no-rbe
 ```
 
 Incremental build (seconds):

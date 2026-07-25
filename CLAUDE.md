@@ -61,20 +61,28 @@ tracked). On a fresh clone, with `~/dev/depot_tools` on PATH:
 gclient sync          # hydrates DEPS: clang toolchain, prebuilt Dart SDK, third_party
 ```
 
-Then generate and build. The `gn` binary lives at
-`engine/src/flutter/third_party/gn/gn` (**not** in `buildtools/`, which only has
-clang):
+Then generate and build. `out/` is untracked, so **a fresh clone has no
+`args.gn`** — `flutter/tools/gn` is what writes it (and then runs `gn gen`; the
+`gn` binary itself lives at `engine/src/flutter/third_party/gn/gn`, **not** in
+`buildtools/`, which only has clang):
 
 ```bash
 cd engine/src
-flutter/third_party/gn/gn gen out/host_debug     # args.gn already present
+flutter/tools/gn --runtime-mode=debug   --no-lto --no-backtrace --no-rbe
+flutter/tools/gn --runtime-mode=release --no-lto --no-backtrace --no-rbe
 ninja -C out/host_debug   libflutter_linux_drm.so libflutter_engine.so
 ninja -C out/host_release libflutter_linux_drm.so libflutter_engine.so
 ```
 
-Incremental rebuilds are seconds. **Rebuild BOTH configs**: the dev runner
-prefers `host_release` when it exists and packaging requires it, so a
-debug-only rebuild silently tests stale code.
+Once `args.gn` exists, regenerating is just `flutter/third_party/gn/gn gen
+out/<config>`. Incremental rebuilds are seconds; a full config is ~4400 steps
+(~8 min on 12 cores). **Rebuild BOTH configs**: the dev runner prefers
+`host_release` when it exists and packaging requires it, so a debug-only
+rebuild silently tests stale code.
+
+Building both repos on a machine with nothing installed —  apt packages,
+depot_tools, toolchains, timings, Ubuntu 26.04 workarounds — is written up in
+starling-desktop's `docs/BUILDING.md`.
 
 ## What starling-desktop consumes
 
