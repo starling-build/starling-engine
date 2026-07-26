@@ -35,22 +35,33 @@ engine/src/flutter/lib/ui/swift/               libswift_bridge (69 files)
 Everything else in the tree is upstream Flutter, kept structurally intact so
 `gclient`/GN keep working and upstream rebases stay possible.
 
-## History: upstream base + one delta commit
+## History: a fork of flutter/flutter, work on the `starling` branch
 
+This is a **GitHub fork of `flutter/flutter`** with upstream's full history and
+tags. Our work is the **`starling`** branch (the repo default), sitting on top
+of the release we are based on — currently tag `3.38.6` (`8b87286`).
+
+`git diff 3.38.6..starling` is exactly the Starling delta (184 files). **Keep it
+small:** when you must edit an upstream file, do it deliberately and minimally.
+New files under the two Starling-owned directories cannot conflict on a rebase;
+edits to upstream files are the only thing that can.
+
+Rebasing onto a newer Flutter is ordinary git, because the ancestry is real:
+
+```bash
+git fetch upstream --tags                   # upstream = flutter/flutter
+git rebase --onto <new-tag> 3.38.6 starling
+gclient sync                                # DEPS will have moved
 ```
-Starling engine changes         ← everything we add, ONE reviewable diff
-Import upstream Flutter 3.38.6  ← pristine flutter/flutter @ 8b87286
-```
 
-`git diff HEAD~1 HEAD` is exactly the Starling delta (203 files). **Keep it that
-way:** when you must edit an upstream file, do it deliberately and minimally —
-every unnecessary change to upstream code is permanent noise in that diff and
-extra conflict surface on the next rebase. Prefer adding files under the two
-Starling-owned directories over modifying upstream ones.
+Rebase onto **release tags, never `main`** — DEPS, the prebuilt Dart SDK and the
+bridge headers starling-desktop compiles against must stay coherent. Budget a
+full rebuild afterwards (~4400 steps per config).
 
-`.github/workflows` is absent by design: Google CI that cannot run here, and
-pushing workflow files needs a token scope this repo's automation lacks. Don't
-re-add it — the push will be rejected.
+Two remotes: `origin` = this fork (HTTPS — the SSH key on this machine
+authenticates as a user without write access to the org), `upstream` =
+`flutter/flutter`. GitHub Actions is disabled here; upstream's workflows are
+Google CI that cannot run in this fork.
 
 ## Build
 
