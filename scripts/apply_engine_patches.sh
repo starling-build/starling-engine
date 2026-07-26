@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Copyright the Starling authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
 #
 # Re-apply local Skia / engine patches under engine/src.
 #

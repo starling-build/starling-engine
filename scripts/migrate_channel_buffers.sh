@@ -1,4 +1,8 @@
 #!/bin/bash
+# Copyright the Starling authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
 # Generic migration script for Dart to Swift migrations
 # Uses Claude CLI with dangerously-skip-permissions in a loop
 #
