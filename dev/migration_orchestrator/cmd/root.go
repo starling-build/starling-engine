@@ -40,7 +40,7 @@ func init() {
 	// Input paths
 	rootCmd.Flags().StringP("metadata", "m", "", "Path to result.json or result.txt from extract_metadata (required)")
 	rootCmd.Flags().StringP("guide", "g", "", "Path to SWIFT_MIGRATION_GUIDE.md")
-	rootCmd.Flags().StringP("workspace", "w", "<workspace>/", "Flutter workspace path")
+	rootCmd.Flags().StringP("workspace", "w", ".", "Flutter workspace path (defaults to the current directory)")
 
 	// Concurrency
 	rootCmd.Flags().IntP("concurrency", "c", 1, "Max concurrent Claude processes")

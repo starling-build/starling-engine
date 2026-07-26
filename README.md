@@ -6,6 +6,11 @@ DRM/KMS embedder and the Swift bridge. All Swift code — the framework port, th
 shell, the apps — lives in the sibling repo **starling-desktop**, which consumes
 this repo's build artifacts.
 
+> **Note:** `starling-desktop` is not public yet, so references to it below are
+> descriptive rather than links. This repo builds and is useful on its own: it
+> produces `libflutter_engine.so` and `libflutter_linux_drm.so`, and the
+> embedder's public surface is `shell/platform/linux_drm/fl_drm_view.h`.
+
 ## History: a real fork of flutter/flutter
 
 This repo is a **GitHub fork of `flutter/flutter`**, so it carries upstream's

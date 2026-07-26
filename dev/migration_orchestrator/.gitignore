@@ -1,0 +1,8 @@
+# Built from source with `go build -o migration-orchestrator .` — the binary
+# does not belong in the tree (it was committed once, as a 5.6 MB Mach-O
+# arm64 build, which is useless on the Linux hosts this project targets).
+/migration-orchestrator
+
+# Run state and captured output from orchestrator runs.
+/migration_progress.json
+/x

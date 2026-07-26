@@ -7,7 +7,8 @@
 
 set -e
 
-WORKSPACE="<workspace>"
+# Default to the repo this script lives in; override with WORKSPACE=... 
+WORKSPACE="${WORKSPACE:-$(cd "$(dirname "$0")/.." && pwd)}"
 TIMEOUT_MINUTES=30
 TIMEOUT_SECONDS=$((TIMEOUT_MINUTES * 60))
 

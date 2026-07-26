@@ -15,7 +15,8 @@ import * as path from "path";
 
 // Configuration
 const CONFIG = {
-  workspace: "<workspace>",
+  // Override with the WORKSPACE env var; defaults to the current directory.
+  workspace: process.env.WORKSPACE ?? process.cwd(),
   maxTurnsPerPlan: 50,
   maxBudgetPerPlan: 5.0, // USD
   retryDelayMs: 5000,

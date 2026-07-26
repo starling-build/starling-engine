@@ -15,7 +15,8 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 
 // Configuration
 const CONFIG = {
-  workspace: "<workspace>",
+  // Override with the WORKSPACE env var; defaults to the current directory.
+  workspace: process.env.WORKSPACE ?? process.cwd(),
   maxTurnsPerTask: 100,
   maxBudgetPerTask: 15.0,  // USD
   retryDelayMs: 5000,
