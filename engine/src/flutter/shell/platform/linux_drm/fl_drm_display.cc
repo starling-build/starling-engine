@@ -33,9 +33,9 @@ void ConnectorName(drmModeConnector* c, char* out, size_t out_size) {
   snprintf(out, out_size, "%s-%u", type_name, c->connector_type_id);
 }
 
-// Selects a mode for a connector: FLUTTER_DRM_MODE ("WxH" or "max") when it
-// applies, otherwise the largest available mode. Returns false if the connector
-// has no modes.
+// Selects a mode for a connector: FLUTTER_DRM_MODE ("WxH", or "max" for the
+// largest by pixel count) when it applies, otherwise the connector's preferred
+// mode. Returns false if the connector has no modes.
 bool SelectMode(drmModeConnector* connector,
                 const char* mode_request,
                 drmModeModeInfo* out) {
@@ -43,6 +43,7 @@ bool SelectMode(drmModeConnector* connector,
     return false;
   }
 
+  bool want_max = false;
   if (mode_request) {
     unsigned req_w = 0, req_h = 0;
     if (sscanf(mode_request, "%ux%u", &req_w, &req_h) == 2) {
@@ -53,14 +54,35 @@ bool SelectMode(drmModeConnector* connector,
           return true;
         }
       }
-      // Requested mode not on this connector — fall through to largest.
-    } else if (strcmp(mode_request, "max") != 0) {
+      // Requested mode not on this connector — fall through to the default.
+    } else if (strcmp(mode_request, "max") == 0) {
+      want_max = true;
+    } else {
       fprintf(stderr, "[DRM] Invalid FLUTTER_DRM_MODE '%s' (use WxH or max)\n",
               mode_request);
     }
   }
 
-  // Largest mode by pixel count.
+  // The connector's preferred mode is the panel's native one, and it is what
+  // every other compositor picks. Largest-by-pixel-count is NOT a safe stand-in:
+  // monitors and virtual outputs routinely advertise an oversized ultrawide
+  // (5120x2160 on a 16:9 panel, say) that wins on pixels and then scans out
+  // letterboxed, with everything oversized once the 2x scale is applied. That
+  // is what shipped, and there was no resolution setting to escape it with.
+  if (!want_max) {
+    for (int i = 0; i < connector->count_modes; i++) {
+      if (connector->modes[i].type & DRM_MODE_TYPE_PREFERRED) {
+        *out = connector->modes[i];
+        return true;
+      }
+    }
+    // No mode flagged preferred: DRM lists modes best-first, so take the head
+    // rather than falling into the largest-by-pixels trap above.
+    *out = connector->modes[0];
+    return true;
+  }
+
+  // Largest mode by pixel count — only when explicitly asked for.
   *out = connector->modes[0];
   uint64_t best = 0;
   for (int i = 0; i < connector->count_modes; i++) {
