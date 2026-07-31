@@ -310,6 +310,20 @@ executable("flutter_linux_unittests") {
   ]
 }
 
+# The GTK embedder as a complete archive, combined into flutter-swift's
+# static engine artifact (make-static-engine.sh there). Self-contained on
+# purpose, libcxx included: it is partial-linked and symbol-localized
+# SEPARATELY from the engine archive, so everything it calls — fml, common,
+# the vendored libc++ — must be bound within it. The resulting duplicates
+# against the engine object are all local by then and coexist freely.
+static_library("flutter_linux_gtk_static") {
+  complete_static_lib = true
+  deps = [
+    ":flutter_linux",
+    "//flutter/third_party/libcxx",
+  ]
+}
+
 shared_library("flutter_linux_gtk") {
   deps = [
     ":flutter_linux",

@@ -566,6 +566,27 @@ if (is_mac && !embedder_for_target) {
   }
 }
 
+# Everything flutter_engine_library links, as one complete archive — the
+# input for flutter-swift's SwiftPM staticLibrary binaryTarget (SE-0482,
+# tools/make-static-engine.sh in that repo). Two things the shared build gets
+# implicitly must be explicit here: BUILDCONFIG.gn injects
+# //flutter/third_party/libcxx into shared_library and executable targets but
+# not static_library (the engine's C++ lives in the vendored libc++'s
+# std::_fl namespace, so without the dep ~3.5k definitions are missing), and
+# --version-script does not apply to archives — make-static-engine.sh
+# reproduces the symbol discipline with objcopy afterwards.
+if (is_linux) {
+  static_library("flutter_engine_static_library") {
+    complete_static_lib = true
+    deps = [
+      ":embedder",
+      "//flutter/lib/ui/swift:swift_bridge_sources",
+      "//flutter/shell/platform/linux_drm:flutter_linux_drm_sources",
+      "//flutter/third_party/libcxx",
+    ]
+  }
+}
+
 group("flutter_engine") {
   deps = []
 
