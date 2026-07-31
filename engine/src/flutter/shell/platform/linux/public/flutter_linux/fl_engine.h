@@ -67,6 +67,21 @@ FlBinaryMessenger* fl_engine_get_binary_messenger(FlEngine* engine);
  */
 FlTextureRegistrar* fl_engine_get_texture_registrar(FlEngine* engine);
 
+/**
+ * fl_engine_set_swift_runtime:
+ * @engine: an #FlEngine.
+ * @runtime_controller: an opaque pointer to the Swift runtime callback table
+ * (SwiftRuntimeCallbacks*). Must outlive the engine.
+ *
+ * Puts the engine in Swift mode: on start it is initialized with
+ * FlutterEngineInitializeSwift instead of running a Dart isolate, and the
+ * Swift framework drives frames through the callback table. Call before the
+ * engine starts (before the hosting #FlView is realized). Same contract as
+ * the DRM embedder's runtime_controller parameter.
+ */
+void fl_engine_set_swift_runtime(FlEngine* engine,
+                                 gconstpointer runtime_controller);
+
 G_END_DECLS
 
 #endif  // FLUTTER_SHELL_PLATFORM_LINUX_PUBLIC_FLUTTER_LINUX_FL_ENGINE_H_

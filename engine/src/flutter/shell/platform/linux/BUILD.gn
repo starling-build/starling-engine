@@ -199,7 +199,13 @@ source_set("flutter_linux") {
 
   public_deps = [ ":flutter_linux_sources" ]
 
-  deps = [ "//flutter/shell/platform/embedder:embedder_as_internal_library" ]
+  # Headers only — the embedder itself comes from libflutter_engine.so (see
+  # the ldflags on :flutter_linux_gtk). Upstream compiles the embedder into
+  # this library (embedder_as_internal_library); this fork must not, because
+  # a Swift app has FlutterSwiftBridge bound to libflutter_engine.so — an
+  # internal second engine copy would give the process two Skias and a bridge
+  # pointing at the one that isn't running. Same arrangement as linux_drm.
+  deps = [ "//flutter/shell/platform/embedder:embedder_headers" ]
 }
 
 test_fixtures("flutter_linux_fixtures") {
@@ -305,9 +311,20 @@ executable("flutter_linux_unittests") {
 }
 
 shared_library("flutter_linux_gtk") {
-  deps = [ ":flutter_linux" ]
+  deps = [
+    ":flutter_linux",
+    "//flutter/shell/platform/embedder:flutter_engine",
+  ]
 
-  ldflags = [ "-Wl,-rpath,\$ORIGIN" ]
+  ldflags = [
+    "-Wl,-rpath,\$ORIGIN",
+
+    # Embedder API symbols (FlutterEngineGetProcAddresses, the Swift entry
+    # points, …) resolve against libflutter_engine.so — one engine per
+    # process, shared with FlutterSwiftBridge. Mirrors linux_drm.
+    "-L" + rebase_path("$root_out_dir"),
+    "-lflutter_engine",
+  ]
 
   public_configs = [ "//flutter:config" ]
 }

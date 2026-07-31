@@ -28,6 +28,22 @@
 #include "flutter/shell/platform/linux/fl_windowing_handler.h"
 #include "flutter/shell/platform/linux/public/flutter_linux/fl_plugin_registry.h"
 
+// This target defines FLUTTER_ENGINE_NO_PROTOTYPES and reaches the embedder
+// API through the proc table. The Swift entry points are this fork's addition
+// and not part of that fixed upstream table, so declare them directly — they
+// resolve inside this library (embedder.cc is linked in).
+extern "C" {
+FlutterEngineResult FlutterEngineInitializeSwift(
+    size_t version,
+    const FlutterRendererConfig* config,
+    const FlutterProjectArgs* args,
+    void* user_data,
+    FlutterRuntimeController runtime_controller,
+    FLUTTER_API_SYMBOL(FlutterEngine)* engine_out);
+FlutterEngineResult FlutterEngineRunInitializedSwift(
+    FLUTTER_API_SYMBOL(FlutterEngine) engine);
+}
+
 // Unique number associated with platform tasks.
 static constexpr size_t kPlatformTaskRunnerIdentifier = 1;
 
@@ -89,6 +105,10 @@ struct _FlEngine {
 
   // The Flutter engine.
   FLUTTER_API_SYMBOL(FlutterEngine) engine;
+
+  // When set, the engine starts in Swift mode (FlutterEngineInitializeSwift,
+  // no Dart isolate) with this SwiftRuntimeCallbacks table driving frames.
+  gconstpointer swift_runtime_controller;
 
   // Function table for engine API, used to intercept engine calls for testing
   // purposes.
@@ -781,6 +801,11 @@ gboolean fl_engine_start(FlEngine* self, GError** error) {
   for (const auto& env_switch : flutter::GetSwitchesFromEnvironment()) {
     g_ptr_array_add(command_line_args, g_strdup(env_switch.c_str()));
   }
+  if (self->swift_runtime_controller != nullptr) {
+    // The Swift runtime renders through Skia; every Swift host passes this
+    // (see fl_drm_view.cc). Impeller aborts under it.
+    g_ptr_array_add(command_line_args, g_strdup("--enable-impeller=false"));
+  }
 
   gchar** dart_entrypoint_args =
       fl_dart_project_get_dart_entrypoint_arguments(self->project);
@@ -813,7 +838,9 @@ gboolean fl_engine_start(FlEngine* self, GError** error) {
   compositor.present_view_callback = compositor_present_view_callback;
   args.compositor = &compositor;
 
-  if (self->embedder_api.RunsAOTCompiledDartCode()) {
+  // Swift mode runs no Dart isolate, so AOT data is meaningless there.
+  if (self->swift_runtime_controller == nullptr &&
+      self->embedder_api.RunsAOTCompiledDartCode()) {
     FlutterEngineAOTDataSource source = {};
     source.type = kFlutterEngineAOTDataSourceTypeElfPath;
     source.elf_path = fl_dart_project_get_aot_library_path(self->project);
@@ -826,15 +853,28 @@ gboolean fl_engine_start(FlEngine* self, GError** error) {
     args.aot_data = self->aot_data;
   }
 
-  FlutterEngineResult result = self->embedder_api.Initialize(
-      FLUTTER_ENGINE_VERSION, &config, &args, self, &self->engine);
+  // Direct calls for the Swift variants, not the proc table: the table is a
+  // fixed upstream struct and these entry points are this fork's addition —
+  // the same way fl_drm_view.cc calls them.
+  FlutterEngineResult result;
+  if (self->swift_runtime_controller != nullptr) {
+    result = FlutterEngineInitializeSwift(
+        FLUTTER_ENGINE_VERSION, &config, &args, self,
+        static_cast<FlutterRuntimeController>(self->swift_runtime_controller),
+        &self->engine);
+  } else {
+    result = self->embedder_api.Initialize(FLUTTER_ENGINE_VERSION, &config,
+                                           &args, self, &self->engine);
+  }
   if (result != kSuccess) {
     g_set_error(error, fl_engine_error_quark(), FL_ENGINE_ERROR_FAILED,
                 "Failed to initialize Flutter engine");
     return FALSE;
   }
 
-  result = self->embedder_api.RunInitialized(self->engine);
+  result = self->swift_runtime_controller != nullptr
+               ? FlutterEngineRunInitializedSwift(self->engine)
+               : self->embedder_api.RunInitialized(self->engine);
   if (result != kSuccess) {
     g_set_error(error, fl_engine_error_quark(), FL_ENGINE_ERROR_FAILED,
                 "Failed to run Flutter engine");
@@ -1466,6 +1506,14 @@ G_MODULE_EXPORT FlTextureRegistrar* fl_engine_get_texture_registrar(
     FlEngine* self) {
   g_return_val_if_fail(FL_IS_ENGINE(self), nullptr);
   return self->texture_registrar;
+}
+
+G_MODULE_EXPORT void fl_engine_set_swift_runtime(
+    FlEngine* self,
+    gconstpointer runtime_controller) {
+  g_return_if_fail(FL_IS_ENGINE(self));
+  g_return_if_fail(self->engine == nullptr);  // must precede fl_engine_start
+  self->swift_runtime_controller = runtime_controller;
 }
 
 void fl_engine_update_accessibility_features(FlEngine* self, int32_t flags) {
