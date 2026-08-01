@@ -73,6 +73,15 @@ static std::atomic<int> g_x11_cap_frames{0};
 static volatile sig_atomic_t g_record_toggle = 0;
 static void RecordSignalHandler(int) { g_record_toggle = 1; }
 
+// Screen-recording API (fl_drm_view_recording_*) — same capture machinery as
+// the signal toggle above, but full-resolution and delivered to a registered
+// callback instead of a file. Requests are posted from any thread and
+// consumed on the presenting thread in RunCaptureHooks; g_api_recording is
+// the raster-thread truth the shell's frame pump polls.
+static std::atomic<int> g_api_record_start{-1};  // pending downscale shift
+static std::atomic<bool> g_api_record_stop{false};
+static std::atomic<bool> g_api_recording{false};
+
 // VT switching — signal handlers run on any thread, set flags for event loop.
 // SIGUSR2 = VT release (kernel wants us to give up the VT).
 // SIGRTMIN = VT acquire (kernel is giving us the VT back).
@@ -249,6 +258,11 @@ struct FlDrmView {
   // thread by the swap chain when a flip lands.
   FlDrmPresentCallback present_callback = nullptr;
   void* present_callback_user_data = nullptr;
+
+  // Screen-recording frame callback — set from Swift, invoked on the
+  // recorder's writer thread (see fl_drm_view.h).
+  FlDrmRecordFrameCallback record_frame_callback = nullptr;
+  void* record_frame_user_data = nullptr;
   uint32_t refresh_ns = 0;  // display refresh period, from the DRM mode
 
   // Damage tracking for partial repaint.
@@ -322,6 +336,42 @@ static const Es3Fns& GetEs3Fns() {
   return fns;
 }
 
+// Paint the cursor into a captured frame (top-down RGBA, downscaled by
+// |shift|). The cursor scans out on the DRM cursor plane, so no GL readback
+// contains it — a recording without a pointer looks broken. Snapshot coords
+// are full-res CRTC-local with the hot-spot already subtracted. Writer-thread
+// only (the shape cache below is unsynchronized on purpose: there is at most
+// one recording session, hence one writer, at a time).
+static void BlendCursorOverlay(uint8_t* frame,
+                               uint32_t fw,
+                               uint32_t fh,
+                               int shift,
+                               const flutter::FlCursorSnapshot& cur) {
+  static uint8_t bitmap[64 * 64 * 4];
+  static int bitmap_shape = -1;
+  if (bitmap_shape != static_cast<int>(cur.shape)) {
+    flutter::FlDrmCursor::RenderShapeRGBA(cur.shape, bitmap);
+    bitmap_shape = static_cast<int>(cur.shape);
+  }
+  const uint32_t size = 64u >> shift;
+  for (uint32_t ty = 0; ty < size; ty++) {
+    const int fy = (cur.y >> shift) + static_cast<int>(ty);
+    if (fy < 0 || fy >= static_cast<int>(fh)) continue;
+    for (uint32_t tx = 0; tx < size; tx++) {
+      const int fx = (cur.x >> shift) + static_cast<int>(tx);
+      if (fx < 0 || fx >= static_cast<int>(fw)) continue;
+      // Nearest sample; the bitmaps are hard-edged (opaque or clear), so
+      // alpha is a mask, not a blend factor.
+      const uint8_t* s = bitmap + (((ty << shift) * 64 + (tx << shift)) * 4);
+      if (s[3] == 0) continue;
+      uint8_t* d = frame + (static_cast<size_t>(fy) * fw + fx) * 4;
+      d[0] = s[0];
+      d[1] = s[1];
+      d[2] = s[2];
+    }
+  }
+}
+
 // ─── Capture hooks (screenshot / video recording / debug stats) ─────────────
 // Observes the final presented pixels: call on the presenting thread with the
 // frame bound as the GL READ framebuffer, before the swap. Primary output
@@ -389,15 +439,22 @@ static void RunCaptureHooks(FlDrmView* v, uint32_t width, uint32_t height) {
     g_x11_cap_valid = true;
   }
 
-  // Video recording (SIGRTMIN+1 toggles). Capture must not perturb the
-  // desktop's present path, so it is fully asynchronous:
-  //   present thread: GPU blit into a small FBO, then glReadPixels into a
+  // Video recording — one capture machinery, two triggers/sinks:
+  //   SIGRTMIN+1 (debug): 4x-downsampled RGB24 appended to
+  //   /tmp/drm_record.bin, converted offline by build/shell-drive.py.
+  //   fl_drm_view_recording_* (the shell's screen recorder): frames handed
+  //   to the registered callback, cursor composited in.
+  // Capture must not perturb the desktop's present path, so it is fully
+  // asynchronous:
+  //   present thread: GPU blit into a capture FBO, then glReadPixels into a
   //   PBO ring — both non-blocking. kRecRing presents later the PBO is
   //   mapped (its DMA long finished) and the pixels are memcpy'd to a
-  //   queue; a background writer thread packs RGB24 and does the file IO.
+  //   queue; a background writer thread does the packing/compositing and
+  //   the file IO or callback.
   // Needs an ES3 context (Mesa hands back 3.x even though we ask for 2).
   struct RecFrame {
     uint64_t ts;
+    flutter::FlCursorSnapshot cursor;
     std::vector<uint8_t> rgba;
   };
   struct RecWriter {
@@ -406,16 +463,22 @@ static void RunCaptureHooks(FlDrmView* v, uint32_t width, uint32_t height) {
     std::condition_variable cv;
     std::deque<RecFrame> q;
     bool done = false;
+    // Exactly one sink is set: the debug file or the shell's callback.
     FILE* file = nullptr;
+    FlDrmRecordFrameCallback cb = nullptr;
+    void* cb_user = nullptr;
     uint32_t rw = 0, rh = 0;
+    int shift = 0;  // frame = full-res >> shift
     int dropped = 0;
   };
   static RecWriter* rec = nullptr;
   constexpr int kRecRing = 3;
   static GLuint rec_pbo[kRecRing] = {0, 0, 0};
   static uint64_t rec_pbo_ts[kRecRing] = {0, 0, 0};
+  static flutter::FlCursorSnapshot rec_pbo_cursor[kRecRing];
   static bool rec_pbo_pending[kRecRing] = {false, false, false};
   static int rec_slot = 0;
+  static size_t rec_pbo_bytes = 0;
 
   const Es3Fns& es3 = GetEs3Fns();
 
@@ -435,6 +498,7 @@ static void RunCaptureHooks(FlDrmView* v, uint32_t width, uint32_t height) {
         if (rec->q.size() < 8) {
           RecFrame fr;
           fr.ts = rec_pbo_ts[slot];
+          fr.cursor = rec_pbo_cursor[slot];
           fr.rgba.assign((uint8_t*)p, (uint8_t*)p + nbytes);
           rec->q.push_back(std::move(fr));
           notify = true;
@@ -448,38 +512,82 @@ static void RunCaptureHooks(FlDrmView* v, uint32_t width, uint32_t height) {
     glBindBuffer(GL_PIXEL_PACK_BUFFER_, 0);
   };
 
+  const bool have_es3 = es3.blit && es3.map && es3.unmap;
+
+  // The writer drains the frame queue until done: packs RGB24 to the file
+  // (debug sink) or composites the cursor and invokes the callback (API
+  // sink), then exits when done and drained.
+  auto start_writer = [](RecWriter* r) {
+    r->th = std::thread([r]() {
+      std::vector<uint8_t> rgb;
+      if (r->file) {
+        rgb.resize((size_t)r->rw * r->rh * 3);
+      }
+      for (;;) {
+        RecFrame fr;
+        {
+          std::unique_lock<std::mutex> lk(r->mu);
+          r->cv.wait(lk, [&] { return r->done || !r->q.empty(); });
+          if (r->q.empty()) break;  // done and drained
+          fr = std::move(r->q.front());
+          r->q.pop_front();
+        }
+        if (r->file) {
+          const uint8_t* src = fr.rgba.data();
+          size_t n = (size_t)r->rw * r->rh;
+          for (size_t i = 0; i < n; i++) {
+            rgb[i * 3 + 0] = src[i * 4 + 0];
+            rgb[i * 3 + 1] = src[i * 4 + 1];
+            rgb[i * 3 + 2] = src[i * 4 + 2];
+          }
+          fwrite(&fr.ts, sizeof(fr.ts), 1, r->file);
+          fwrite(rgb.data(), 1, rgb.size(), r->file);
+        } else {
+          if (fr.cursor.visible) {
+            BlendCursorOverlay(fr.rgba.data(), r->rw, r->rh, r->shift,
+                               fr.cursor);
+          }
+          r->cb(r->cb_user, fr.rgba.data(), r->rw, r->rh, fr.ts);
+        }
+      }
+    });
+  };
+
+  // Stop: collect outstanding slots, let the writer finish, close. The join
+  // stalls the present thread for the tail of the queue (≤11 frames) — a
+  // one-time hiccup at stop, same trade the debug path has always made.
+  auto stop_rec = [&]() {
+    for (int i = 0; i < kRecRing; i++)
+      drain_slot((rec_slot + i) % kRecRing);
+    {
+      std::lock_guard<std::mutex> lk(rec->mu);
+      rec->done = true;
+    }
+    rec->cv.notify_one();
+    rec->th.join();
+    if (rec->file) fclose(rec->file);
+    if (rec->dropped)
+      fprintf(stderr, "[DrmView] Recording dropped %d frames\n",
+              rec->dropped);
+    fprintf(stderr, "[DrmView] Recording stopped\n");
+    delete rec;
+    rec = nullptr;
+    for (int i = 0; i < kRecRing; i++) rec_pbo_pending[i] = false;
+    g_api_recording.store(false, std::memory_order_release);
+  };
+
   if (g_record_toggle) {
     g_record_toggle = 0;
     if (!rec) {
-      if (es3.blit && es3.map && es3.unmap) {
+      if (have_es3) {
         FILE* f = fopen("/tmp/drm_record.bin", "wb");
         if (f) {
           rec = new RecWriter();
           rec->file = f;
           rec->rw = width / 4;
           rec->rh = height / 4;
-          rec->th = std::thread([r = rec]() {
-            std::vector<uint8_t> rgb((size_t)r->rw * r->rh * 3);
-            for (;;) {
-              RecFrame fr;
-              {
-                std::unique_lock<std::mutex> lk(r->mu);
-                r->cv.wait(lk, [&] { return r->done || !r->q.empty(); });
-                if (r->q.empty()) break;  // done and drained
-                fr = std::move(r->q.front());
-                r->q.pop_front();
-              }
-              const uint8_t* src = fr.rgba.data();
-              size_t n = (size_t)r->rw * r->rh;
-              for (size_t i = 0; i < n; i++) {
-                rgb[i * 3 + 0] = src[i * 4 + 0];
-                rgb[i * 3 + 1] = src[i * 4 + 1];
-                rgb[i * 3 + 2] = src[i * 4 + 2];
-              }
-              fwrite(&fr.ts, sizeof(fr.ts), 1, r->file);
-              fwrite(rgb.data(), 1, rgb.size(), r->file);
-            }
-          });
+          rec->shift = 2;
+          start_writer(rec);
           fprintf(stderr,
                   "[DrmView] Recording started -> /tmp/drm_record.bin\n");
         }
@@ -487,24 +595,41 @@ static void RunCaptureHooks(FlDrmView* v, uint32_t width, uint32_t height) {
         fprintf(stderr,
                 "[DrmView] Recording unavailable: needs an ES3 context\n");
       }
+    } else if (rec->file) {
+      stop_rec();
     } else {
-      // Stop: collect outstanding slots, let the writer finish, close.
-      for (int i = 0; i < kRecRing; i++)
-        drain_slot((rec_slot + i) % kRecRing);
-      {
-        std::lock_guard<std::mutex> lk(rec->mu);
-        rec->done = true;
-      }
-      rec->cv.notify_one();
-      rec->th.join();
-      fclose(rec->file);
-      if (rec->dropped)
-        fprintf(stderr, "[DrmView] Recording dropped %d frames\n",
-                rec->dropped);
-      fprintf(stderr, "[DrmView] Recording stopped\n");
-      delete rec;
-      rec = nullptr;
-      for (int i = 0; i < kRecRing; i++) rec_pbo_pending[i] = false;
+      fprintf(stderr,
+              "[DrmView] SIGRTMIN+1 ignored: recording API session active\n");
+    }
+  }
+
+  // API stop before start, so a fast stop→start toggle ends up recording.
+  if (g_api_record_stop.exchange(false, std::memory_order_acq_rel) && rec &&
+      rec->cb) {
+    stop_rec();
+  }
+  int api_shift = g_api_record_start.exchange(-1, std::memory_order_acq_rel);
+  if (api_shift >= 0) {
+    if (rec) {
+      fprintf(stderr,
+              "[DrmView] recording_start ignored: already recording\n");
+    } else if (!v->record_frame_callback) {
+      fprintf(stderr,
+              "[DrmView] recording_start ignored: no frame callback\n");
+    } else if (!have_es3) {
+      fprintf(stderr,
+              "[DrmView] Recording unavailable: needs an ES3 context\n");
+    } else {
+      rec = new RecWriter();
+      rec->cb = v->record_frame_callback;
+      rec->cb_user = v->record_frame_user_data;
+      rec->shift = api_shift;
+      rec->rw = std::max(1u, width >> api_shift);
+      rec->rh = std::max(1u, height >> api_shift);
+      start_writer(rec);
+      g_api_recording.store(true, std::memory_order_release);
+      fprintf(stderr, "[DrmView] Recording started -> callback (%ux%u)\n",
+              rec->rw, rec->rh);
     }
   }
 
@@ -527,12 +652,17 @@ static void RunCaptureHooks(FlDrmView* v, uint32_t width, uint32_t height) {
     }
     if (rec_pbo[0] == 0) {
       glGenBuffers(kRecRing, rec_pbo);
+    }
+    // Sized for THIS session — the debug and API sinks capture at different
+    // resolutions, so the ring can't be allocated once and forgotten.
+    if (rec_pbo_bytes != (size_t)rw * rh * 4) {
       for (int i = 0; i < kRecRing; i++) {
         glBindBuffer(GL_PIXEL_PACK_BUFFER_, rec_pbo[i]);
         glBufferData(GL_PIXEL_PACK_BUFFER_, (GLsizeiptr)rw * rh * 4,
                      nullptr, GL_STREAM_READ_);
       }
       glBindBuffer(GL_PIXEL_PACK_BUFFER_, 0);
+      rec_pbo_bytes = (size_t)rw * rh * 4;
     }
 
     // The slot queued kRecRing presents ago is done — collect it first,
@@ -557,6 +687,13 @@ static void RunCaptureHooks(FlDrmView* v, uint32_t width, uint32_t height) {
     clock_gettime(CLOCK_MONOTONIC, &ts);
     rec_pbo_ts[rec_slot] =
         (uint64_t)ts.tv_sec * 1000000ull + ts.tv_nsec / 1000;
+    // Cursor state travels with the frame it was captured alongside; the
+    // writer paints it in, and only when the pointer is on this output.
+    flutter::FlCursorSnapshot cur = v->cursor.Snapshot();
+    if (cur.crtc_id != v->display.crtc_id()) {
+      cur.visible = false;
+    }
+    rec_pbo_cursor[rec_slot] = cur;
     rec_pbo_pending[rec_slot] = true;
     rec_slot = (rec_slot + 1) % kRecRing;
   }
@@ -1725,9 +1862,14 @@ static void* PlatformThreadEntry(void* arg) {
       FlutterEngineScheduleFrame(view->engine);
     }
 
-    // Record toggle pending (SIGRTMIN+1) — the flag is consumed in the
-    // present callback, so make sure a frame happens.
-    if (g_record_toggle && view->engine && view->vt_active) {
+    // Record toggle pending (SIGRTMIN+1) or a recording API request — the
+    // flags are consumed in the present callback, so make sure a frame
+    // happens. (A frame with no damage still won't composite; the shell's
+    // frame pump provides the damage while recording.)
+    if ((g_record_toggle ||
+         g_api_record_start.load(std::memory_order_relaxed) >= 0 ||
+         g_api_record_stop.load(std::memory_order_relaxed)) &&
+        view->engine && view->vt_active) {
       FlutterEngineScheduleFrame(view->engine);
     }
 
@@ -2114,6 +2256,36 @@ void fl_drm_view_set_present_callback(FlDrmView* view,
   }
   view->present_callback_user_data = user_data;
   view->present_callback = cb;
+}
+
+void fl_drm_view_set_record_frame_callback(FlDrmView* view,
+                                            FlDrmRecordFrameCallback callback,
+                                            void* user_data) {
+  if (!view) {
+    return;
+  }
+  view->record_frame_user_data = user_data;
+  view->record_frame_callback = callback;
+}
+
+void fl_drm_view_recording_start(FlDrmView* view, int downscale_shift) {
+  if (downscale_shift < 0) downscale_shift = 0;
+  if (downscale_shift > 3) downscale_shift = 3;
+  g_api_record_start.store(downscale_shift, std::memory_order_release);
+  if (view && view->engine) {
+    FlutterEngineScheduleFrame(view->engine);
+  }
+}
+
+void fl_drm_view_recording_stop(FlDrmView* view) {
+  g_api_record_stop.store(true, std::memory_order_release);
+  if (view && view->engine) {
+    FlutterEngineScheduleFrame(view->engine);
+  }
+}
+
+int fl_drm_view_recording_active(void) {
+  return g_api_recording.load(std::memory_order_acquire) ? 1 : 0;
 }
 
 uint32_t fl_drm_view_get_refresh_mhz(FlDrmView* view) {

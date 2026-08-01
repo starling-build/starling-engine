@@ -103,6 +103,42 @@ FL_DRM_EXPORT int fl_drm_view_read_capture(int x, int y, int w, int h,
 // frame-tick pump forces presents while this holds so the mirror refreshes.
 FL_DRM_EXPORT int fl_drm_view_capture_active(void);
 
+// ─── Screen recording ────────────────────────────────────────────────────────
+// The shell's screen recorder. Every presented primary-output frame is
+// captured asynchronously (GPU blit + PBO ring — the present path is never
+// stalled) and delivered to the registered callback as top-down RGBA with a
+// CLOCK_MONOTONIC microsecond timestamp. The hardware cursor is composited
+// into the frame (it scans out on a cursor plane no GL readback can see).
+//
+// The callback fires on an internal writer thread — NOT the platform or UI
+// thread — and the pixel buffer is only valid for the duration of the call.
+// Copy it and get out; encoding belongs on the caller's own thread.
+typedef void (*FlDrmRecordFrameCallback)(void* user_data,
+                                         const uint8_t* rgba,
+                                         uint32_t width,
+                                         uint32_t height,
+                                         uint64_t timestamp_us);
+FL_DRM_EXPORT void fl_drm_view_set_record_frame_callback(
+    FlDrmView* view,
+    FlDrmRecordFrameCallback callback,
+    void* user_data);
+
+// Start/stop recording. Requests are consumed on the presenting thread at
+// the next present, so both need frames to be flowing: the shell's
+// frame-tick pump must run while recording AND until recording_active()
+// reads 0 again after a stop, or the stop is never observed. Frames are
+// full-resolution >> downscale_shift (0 = full, clamped to [0,3]). A start
+// with no callback registered, or while a recording (either sink) is
+// already running, is logged and ignored.
+FL_DRM_EXPORT void fl_drm_view_recording_start(FlDrmView* view,
+                                               int downscale_shift);
+FL_DRM_EXPORT void fl_drm_view_recording_stop(FlDrmView* view);
+// Non-zero while a callback-sink recording session is live on the raster
+// thread (i.e. between the start request being consumed and the stop
+// request finishing its drain). The SIGRTMIN+1 debug file recording does
+// not show up here.
+FL_DRM_EXPORT int fl_drm_view_recording_active(void);
+
 // Cursor shapes — must stay in sync with flutter::CursorShape.
 typedef enum {
   FL_DRM_CURSOR_DEFAULT = 0,

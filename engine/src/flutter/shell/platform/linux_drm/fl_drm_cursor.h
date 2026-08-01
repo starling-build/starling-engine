@@ -8,6 +8,8 @@
 #include <gbm.h>
 #include <stdint.h>
 
+#include <mutex>
+
 namespace flutter {
 
 // Cursor shapes the shell can switch between. Keep in sync with the
@@ -20,6 +22,18 @@ enum class FlCursorShape : int {
   kResizeNWSE = 4, // Diagonal: top-left  / bottom-right corners.
   kText = 5,       // I-beam (over editable text).
   kPointer = 6,    // Pointing hand (over links).
+};
+
+// Cursor state at one instant, for software compositing (screen recording
+// paints the cursor back into captured frames — the hardware plane it scans
+// out on is invisible to GL readback). |x|,|y| are CRTC-local coordinates of
+// the bitmap's top-left, hot-spot already subtracted.
+struct FlCursorSnapshot {
+  bool visible = false;
+  uint32_t crtc_id = 0;
+  int x = 0;
+  int y = 0;
+  FlCursorShape shape = FlCursorShape::kDefault;
 };
 
 class FlDrmCursor {
@@ -48,6 +62,15 @@ class FlDrmCursor {
   // already current — only rewrites the GBM buffer on change.
   void SetShape(FlCursorShape shape);
 
+  // Consistent copy of the current cursor state. Safe from any thread —
+  // position moves on the platform thread, shape on the UI thread, and the
+  // recorder reads from its writer thread.
+  FlCursorSnapshot Snapshot() const;
+
+  // Render |shape|'s bitmap as straight RGBA (64×64×4, top-down, alpha 0
+  // where the cursor buffer is transparent) for software compositing.
+  static void RenderShapeRGBA(FlCursorShape shape, uint8_t* rgba);
+
  private:
   // Write the bitmap for |shape| into cursor_bo_.
   void LoadShape(FlCursorShape shape);
@@ -57,6 +80,11 @@ class FlDrmCursor {
   gbm_bo* cursor_bo_ = nullptr;
   bool visible_ = false;
   FlCursorShape current_shape_ = FlCursorShape::kDefault;
+
+  // Guards the snapshot fields (crtc_id_, visible_, current_shape_, hot spot,
+  // last position) — written from the platform and UI threads, read by
+  // Snapshot() from the recorder's writer thread.
+  mutable std::mutex state_mu_;
 
   // Hot-spot of the current shape (offset of the "click point" inside the
   // bitmap). The legacy drmModeSetCursor API has no hot-spot support, so

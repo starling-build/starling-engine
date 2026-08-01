@@ -271,9 +271,12 @@ void FlDrmCursor::LoadShape(FlCursorShape shape) {
   }
 
   gbm_bo_write(cursor_bo_, buf, sizeof(buf));
-  current_shape_ = shape;
-  hot_x_ = def.hot_x;
-  hot_y_ = def.hot_y;
+  {
+    std::lock_guard<std::mutex> lk(state_mu_);
+    current_shape_ = shape;
+    hot_x_ = def.hot_x;
+    hot_y_ = def.hot_y;
+  }
 }
 
 void FlDrmCursor::SetShape(FlCursorShape shape) {
@@ -298,7 +301,10 @@ void FlDrmCursor::MoveTo(uint32_t crtc_id, int x, int y) {
     if (visible_) {
       drmModeSetCursor(drm_fd_, crtc_id_, 0, 0, 0);
     }
-    crtc_id_ = crtc_id;
+    {
+      std::lock_guard<std::mutex> lk(state_mu_);
+      crtc_id_ = crtc_id;
+    }
     if (visible_ && cursor_bo_) {
       uint32_t handle = gbm_bo_get_handle(cursor_bo_).u32;
       drmModeSetCursor(drm_fd_, crtc_id_, handle, kCursorWidth,
@@ -313,12 +319,18 @@ void FlDrmCursor::MoveTo(int x, int y) {
   if (!visible_) {
     SetVisible(true);
   }
-  last_x_ = x;
-  last_y_ = y;
-  // The legacy cursor API anchors the buffer's top-left at the given
-  // position; subtract the shape's hot-spot so the logical click point
-  // (arrow tip, I-beam center, fingertip) sits on the pointer.
-  drmModeMoveCursor(drm_fd_, crtc_id_, x - hot_x_, y - hot_y_);
+  int px, py;
+  {
+    std::lock_guard<std::mutex> lk(state_mu_);
+    last_x_ = x;
+    last_y_ = y;
+    // The legacy cursor API anchors the buffer's top-left at the given
+    // position; subtract the shape's hot-spot so the logical click point
+    // (arrow tip, I-beam center, fingertip) sits on the pointer.
+    px = x - hot_x_;
+    py = y - hot_y_;
+  }
+  drmModeMoveCursor(drm_fd_, crtc_id_, px, py);
 }
 
 void FlDrmCursor::Restore() {
@@ -332,13 +344,46 @@ void FlDrmCursor::SetVisible(bool visible) {
   if (visible == visible_) {
     return;
   }
-  visible_ = visible;
+  {
+    std::lock_guard<std::mutex> lk(state_mu_);
+    visible_ = visible;
+  }
   if (visible && cursor_bo_) {
     uint32_t handle = gbm_bo_get_handle(cursor_bo_).u32;
     drmModeSetCursor(drm_fd_, crtc_id_, handle,
                       kCursorWidth, kCursorHeight);
   } else {
     drmModeSetCursor(drm_fd_, crtc_id_, 0, 0, 0);
+  }
+}
+
+FlCursorSnapshot FlDrmCursor::Snapshot() const {
+  std::lock_guard<std::mutex> lk(state_mu_);
+  FlCursorSnapshot s;
+  s.visible = visible_;
+  s.crtc_id = crtc_id_;
+  s.x = last_x_ - hot_x_;
+  s.y = last_y_ - hot_y_;
+  s.shape = current_shape_;
+  return s;
+}
+
+void FlDrmCursor::RenderShapeRGBA(FlCursorShape shape, uint8_t* rgba) {
+  memset(rgba, 0, kCursorWidth * kCursorHeight * 4);
+  BitmapDef def = BitmapForShape(shape);
+  uint32_t max_rows = def.rows_count < kCursorHeight ? def.rows_count
+                                                     : kCursorHeight;
+  uint32_t max_cols = def.cols < kCursorWidth ? def.cols : kCursorWidth;
+  for (uint32_t y = 0; y < max_rows; y++) {
+    for (uint32_t x = 0; x < max_cols; x++) {
+      char c = def.rows[y][x];
+      if (c != 'B' && c != 'W') {
+        continue;
+      }
+      uint8_t* p = rgba + (y * kCursorWidth + x) * 4;
+      p[0] = p[1] = p[2] = (c == 'W') ? 0xFF : 0x00;
+      p[3] = 0xFF;
+    }
   }
 }
 
