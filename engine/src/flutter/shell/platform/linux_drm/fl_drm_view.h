@@ -132,6 +132,17 @@ FL_DRM_EXPORT void fl_drm_view_set_record_frame_callback(
 // already running, is logged and ignored.
 FL_DRM_EXPORT void fl_drm_view_recording_start(FlDrmView* view,
                                                int downscale_shift);
+// Record a region instead of the whole output (window recording): the crop
+// is top-down framebuffer px; w<=0 means full output. Output dimensions
+// freeze at start — a crop that later moves/resizes (track it with
+// set_crop, callable per frame from any thread) scales into them. The
+// cursor is composited crop-relative.
+FL_DRM_EXPORT void fl_drm_view_recording_start_cropped(FlDrmView* view,
+                                                       int downscale_shift,
+                                                       int x, int y,
+                                                       int w, int h);
+FL_DRM_EXPORT void fl_drm_view_recording_set_crop(int x, int y,
+                                                  int w, int h);
 FL_DRM_EXPORT void fl_drm_view_recording_stop(FlDrmView* view);
 // Non-zero while a callback-sink recording session is live on the raster
 // thread (i.e. between the start request being consumed and the stop

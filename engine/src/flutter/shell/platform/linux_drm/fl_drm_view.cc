@@ -81,6 +81,11 @@ static void RecordSignalHandler(int) { g_record_toggle = 1; }
 static std::atomic<int> g_api_record_start{-1};  // pending downscale shift
 static std::atomic<bool> g_api_record_stop{false};
 static std::atomic<bool> g_api_recording{false};
+// Capture crop, top-down framebuffer px — {x, y, w, h}. w<=0 means the whole
+// output (screen recording). Written from any thread (start, and per-frame
+// set_crop while a window recording tracks its window), read per present.
+// Torn reads across the four values skew one frame by a few px — harmless.
+static std::atomic<int> g_api_crop[4] = {0, 0, 0, 0};
 
 // VT switching — signal handlers run on any thread, set flags for event loop.
 // SIGUSR2 = VT release (kernel wants us to give up the VT).
@@ -620,12 +625,18 @@ static void RunCaptureHooks(FlDrmView* v, uint32_t width, uint32_t height) {
       fprintf(stderr,
               "[DrmView] Recording unavailable: needs an ES3 context\n");
     } else {
+      // Output dims freeze at start (the encoder is fixed-size): the crop
+      // may move and resize while recording — later frames scale into
+      // these dims.
+      uint32_t cw = (uint32_t)std::max(0, g_api_crop[2].load());
+      uint32_t ch = (uint32_t)std::max(0, g_api_crop[3].load());
+      if (cw == 0 || ch == 0) { cw = width; ch = height; }
       rec = new RecWriter();
       rec->cb = v->record_frame_callback;
       rec->cb_user = v->record_frame_user_data;
       rec->shift = api_shift;
-      rec->rw = std::max(1u, width >> api_shift);
-      rec->rh = std::max(1u, height >> api_shift);
+      rec->rw = std::max(1u, cw >> api_shift);
+      rec->rh = std::max(1u, ch >> api_shift);
       start_writer(rec);
       g_api_recording.store(true, std::memory_order_release);
       fprintf(stderr, "[DrmView] Recording started -> callback (%ux%u)\n",
@@ -670,12 +681,26 @@ static void RunCaptureHooks(FlDrmView* v, uint32_t width, uint32_t height) {
     // is the capture source; re-bind it after the downsample blit.
     drain_slot(rec_slot);
 
+    // The capture source: the whole output, or the live crop (a window
+    // recording — the shell re-points it as the window moves). Top-down
+    // crop coords; GL rows are bottom-up, so flip while cropping. Clamped
+    // so a window half-dragged off screen doesn't blit garbage.
+    int sx = 0, sy = 0;
+    int sw = (int)w, sh = (int)h;
+    if (rec->cb && g_api_crop[2].load(std::memory_order_relaxed) > 0) {
+      sx = std::min(std::max(g_api_crop[0].load(), 0), (int)w - 1);
+      sy = std::min(std::max(g_api_crop[1].load(), 0), (int)h - 1);
+      sw = std::min(std::max(g_api_crop[2].load(), 1), (int)w - sx);
+      sh = std::min(std::max(g_api_crop[3].load(), 1), (int)h - sy);
+    }
+
     GLint read_fbo_binding = 0;
     glGetIntegerv(0x8CAA /* GL_READ_FRAMEBUFFER_BINDING */,
                   &read_fbo_binding);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER_, rec_fbo);
     // Flipped source rect: GL rows are bottom-up, output is top-down.
-    es3.blit(0, h, w, 0, 0, 0, rw, rh, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+    es3.blit(sx, (int)h - sy, sx + sw, (int)h - sy - sh,
+             0, 0, rw, rh, GL_COLOR_BUFFER_BIT, GL_LINEAR);
     glBindFramebuffer(GL_READ_FRAMEBUFFER_, rec_fbo);
     glBindBuffer(GL_PIXEL_PACK_BUFFER_, rec_pbo[rec_slot]);
     glReadPixels(0, 0, rw, rh, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
@@ -689,10 +714,14 @@ static void RunCaptureHooks(FlDrmView* v, uint32_t width, uint32_t height) {
         (uint64_t)ts.tv_sec * 1000000ull + ts.tv_nsec / 1000;
     // Cursor state travels with the frame it was captured alongside; the
     // writer paints it in, and only when the pointer is on this output.
+    // Crop-relative for window recordings (exact while the crop holds its
+    // start size; a mid-recording resize skews it with the scaling).
     flutter::FlCursorSnapshot cur = v->cursor.Snapshot();
     if (cur.crtc_id != v->display.crtc_id()) {
       cur.visible = false;
     }
+    cur.x -= sx;
+    cur.y -= sy;
     rec_pbo_cursor[rec_slot] = cur;
     rec_pbo_pending[rec_slot] = true;
     rec_slot = (rec_slot + 1) % kRecRing;
@@ -2269,12 +2298,25 @@ void fl_drm_view_set_record_frame_callback(FlDrmView* view,
 }
 
 void fl_drm_view_recording_start(FlDrmView* view, int downscale_shift) {
+  fl_drm_view_recording_start_cropped(view, downscale_shift, 0, 0, 0, 0);
+}
+
+void fl_drm_view_recording_start_cropped(FlDrmView* view, int downscale_shift,
+                                          int x, int y, int w, int h) {
   if (downscale_shift < 0) downscale_shift = 0;
   if (downscale_shift > 3) downscale_shift = 3;
+  fl_drm_view_recording_set_crop(x, y, w, h);
   g_api_record_start.store(downscale_shift, std::memory_order_release);
   if (view && view->engine) {
     FlutterEngineScheduleFrame(view->engine);
   }
+}
+
+void fl_drm_view_recording_set_crop(int x, int y, int w, int h) {
+  g_api_crop[0].store(x, std::memory_order_relaxed);
+  g_api_crop[1].store(y, std::memory_order_relaxed);
+  g_api_crop[2].store(w, std::memory_order_relaxed);
+  g_api_crop[3].store(h, std::memory_order_relaxed);
 }
 
 void fl_drm_view_recording_stop(FlDrmView* view) {
