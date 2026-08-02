@@ -164,6 +164,52 @@ FL_DRM_EXPORT void fl_drm_view_recording_stop(FlDrmView* view);
 // not show up here.
 FL_DRM_EXPORT int fl_drm_view_recording_active(void);
 
+// ─── Zero-copy recording (DMA-BUF sink) ──────────────────────────────────────
+// Alternative frame delivery for hardware encoders: instead of reading the
+// capture FBO back to the CPU, the engine blits into a small ring of
+// GBM-allocated linear buffers and hands their DMA-BUF fds to this callback —
+// pixels never leave the GPU. The cursor is drawn into the buffer on the GPU
+// (the CPU sink blends it during readback packing).
+//
+// Contract, which differs from the CPU sink on every point that matters:
+//   - Fires on the PRESENTING thread. Queue the frame and get out — any real
+//     work here stalls the desktop's present path.
+//   - The fd is owned by the engine and stays open for the life of the ring;
+//     never close it. Import it (VAAPI DRM PRIME etc.) and encode.
+//   - Each frame names a ring `slot`. The engine will not reuse the slot's
+//     buffer until fl_drm_view_recording_release_dmabuf_slot(slot) — release
+//     promptly (a stalled consumer makes the engine drop frames, and a slot
+//     leaked across a stop blocks the next session's ring re-size). GPU-side
+//     write-vs-read ordering across GL and the encoder rides the kernel's
+//     implicit dma-buf fencing.
+//   - A frame with fd == -1 (slot == -1) is the one-shot fallback sentinel:
+//     the ring could not be built, the session continues with CPU frames to
+//     the regular record-frame callback, and no dmabuf frames will follow.
+//
+// Delivery is opt-in per session: arm with recording_set_dmabuf(1) before
+// recording_start*, and re-arm (or clear) before every start — the flag is
+// consumed when the start is. Starting armed with no dmabuf callback
+// registered falls back to CPU frames silently.
+typedef struct {
+  int32_t slot;          // ring slot to release; -1 on the fallback sentinel
+  int32_t fd;            // engine-owned dmabuf fd; -1 on the fallback sentinel
+  uint32_t width;        // frame size in pixels (buffer may be wider — stride)
+  uint32_t height;
+  uint32_t stride;       // bytes per row
+  uint32_t offset;       // byte offset of the frame within the buffer
+  uint32_t fourcc;       // DRM_FORMAT_ABGR8888: R,G,B,A bytes in memory
+  uint64_t modifier;     // DRM format modifier (linear)
+  uint64_t timestamp_us; // CLOCK_MONOTONIC, same clock as the CPU sink
+} FlDrmRecordDmabufFrame;
+typedef void (*FlDrmRecordDmabufCallback)(void* user_data,
+                                          const FlDrmRecordDmabufFrame* frame);
+FL_DRM_EXPORT void fl_drm_view_set_record_dmabuf_callback(
+    FlDrmView* view,
+    FlDrmRecordDmabufCallback callback,
+    void* user_data);
+FL_DRM_EXPORT void fl_drm_view_recording_set_dmabuf(int enable);
+FL_DRM_EXPORT void fl_drm_view_recording_release_dmabuf_slot(int slot);
+
 // Cursor shapes — must stay in sync with flutter::CursorShape.
 typedef enum {
   FL_DRM_CURSOR_DEFAULT = 0,

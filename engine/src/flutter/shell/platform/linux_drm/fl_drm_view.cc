@@ -96,6 +96,14 @@ static std::atomic<int64_t> g_api_record_texture{-1};
 // blit flips the latter. The scene has the same split: flipTextureY.
 static std::atomic<bool> g_api_record_tex_topdown{false};
 
+// Zero-copy sink (see fl_drm_view.h): armed per session by the shell,
+// consumed with the start request. The busy mask is the only recording state
+// touched off the presenting thread — release_dmabuf_slot clears bits from
+// the encoder's thread while presents test-and-set them.
+static std::atomic<bool> g_api_record_dmabuf{false};
+constexpr int kDmabufRing = 4;
+static std::atomic<uint32_t> g_dmabuf_busy{0};
+
 // VT switching — signal handlers run on any thread, set flags for event loop.
 // SIGUSR2 = VT release (kernel wants us to give up the VT).
 // SIGRTMIN = VT acquire (kernel is giving us the VT back).
@@ -277,6 +285,9 @@ struct FlDrmView {
   // recorder's writer thread (see fl_drm_view.h).
   FlDrmRecordFrameCallback record_frame_callback = nullptr;
   void* record_frame_user_data = nullptr;
+  // Zero-copy sibling: dmabuf frames, invoked on the presenting thread.
+  FlDrmRecordDmabufCallback record_dmabuf_callback = nullptr;
+  void* record_dmabuf_user_data = nullptr;
   uint32_t refresh_ns = 0;  // display refresh period, from the DRM mode
 
   // Damage tracking for partial repaint.
@@ -386,6 +397,261 @@ static void BlendCursorOverlay(uint8_t* frame,
   }
 }
 
+// ─── Zero-copy recording ring ────────────────────────────────────────────────
+// GBM-allocated linear buffers the capture blit lands in directly; their
+// dmabuf fds go to the shell's hardware encoder and the pixels never touch
+// the CPU. All GL/EGL work happens on the presenting thread with its context
+// current — only the busy mask (above) is shared with the encoder's thread.
+
+constexpr EGLenum EGL_LINUX_DMA_BUF_EXT_ = 0x3270;
+constexpr EGLint EGL_LINUX_DRM_FOURCC_EXT_ = 0x3271;
+constexpr EGLint EGL_DMA_BUF_PLANE0_FD_EXT_ = 0x3272;
+constexpr EGLint EGL_DMA_BUF_PLANE0_OFFSET_EXT_ = 0x3273;
+constexpr EGLint EGL_DMA_BUF_PLANE0_PITCH_EXT_ = 0x3274;
+constexpr uint32_t DRM_FORMAT_ABGR8888_ = 0x34324241;  // 'AB24': R,G,B,A bytes
+constexpr uint64_t DRM_FORMAT_MOD_INVALID_ = 0x00ffffffffffffffull;
+constexpr GLenum GL_VERTEX_ARRAY_BINDING_ = 0x85B5;
+
+struct ZeroCopyFns {
+  typedef void* (*CreateImageFn)(EGLDisplay, EGLContext, EGLenum, void*,
+                                 const EGLint*);
+  typedef EGLBoolean (*DestroyImageFn)(EGLDisplay, void*);
+  typedef void (*ImageTargetRboFn)(GLenum, void*);
+  typedef void (*BindVertexArrayFn)(GLuint);
+  CreateImageFn create_image = nullptr;
+  DestroyImageFn destroy_image = nullptr;
+  ImageTargetRboFn image_target_rbo = nullptr;
+  BindVertexArrayFn bind_vertex_array = nullptr;
+  bool complete() const {
+    return create_image && destroy_image && image_target_rbo &&
+           bind_vertex_array;
+  }
+};
+
+static const ZeroCopyFns& GetZeroCopyFns() {
+  static ZeroCopyFns fns;
+  static bool checked = false;
+  if (!checked) {
+    checked = true;
+    fns.create_image =
+        (ZeroCopyFns::CreateImageFn)eglGetProcAddress("eglCreateImageKHR");
+    fns.destroy_image =
+        (ZeroCopyFns::DestroyImageFn)eglGetProcAddress("eglDestroyImageKHR");
+    fns.image_target_rbo = (ZeroCopyFns::ImageTargetRboFn)eglGetProcAddress(
+        "glEGLImageTargetRenderbufferStorageOES");
+    fns.bind_vertex_array =
+        (ZeroCopyFns::BindVertexArrayFn)eglGetProcAddress("glBindVertexArray");
+  }
+  return fns;
+}
+
+struct DmabufSlot {
+  gbm_bo* bo = nullptr;
+  int fd = -1;         // exported once; owned here, engine lifetime
+  void* image = nullptr;  // EGLImageKHR
+  GLuint rbo = 0;
+  GLuint fbo = 0;
+  uint32_t stride = 0;
+  uint64_t modifier = 0;
+};
+struct DmabufRing {
+  uint32_t w = 0, h = 0;
+  DmabufSlot slots[kDmabufRing];
+};
+static DmabufRing g_dmabuf_ring;
+
+static void FreeDmabufRing(FlDrmView* v) {
+  const ZeroCopyFns& fns = GetZeroCopyFns();
+  for (DmabufSlot& s : g_dmabuf_ring.slots) {
+    if (s.fbo) glDeleteFramebuffers(1, &s.fbo);
+    if (s.rbo) glDeleteRenderbuffers(1, &s.rbo);
+    if (s.image && fns.destroy_image) fns.destroy_image(v->egl.display(), s.image);
+    if (s.fd >= 0) close(s.fd);
+    if (s.bo) gbm_bo_destroy(s.bo);
+    s = DmabufSlot();
+  }
+  g_dmabuf_ring.w = g_dmabuf_ring.h = 0;
+}
+
+// The ring outlives the session that built it (slots may still be held by
+// the encoder when the stop is consumed) and is recycled when the next
+// session matches its size. Returns false — caller falls back to CPU
+// frames — when the GBM/EGL path is unavailable, any slot fails to build,
+// or a stale ring of the wrong size is still partly held.
+static bool EnsureDmabufRing(FlDrmView* v, uint32_t w, uint32_t h) {
+  const ZeroCopyFns& fns = GetZeroCopyFns();
+  if (!fns.complete() || !v->gbm.device()) return false;
+  if (g_dmabuf_ring.w == w && g_dmabuf_ring.h == h) return true;
+  if (g_dmabuf_busy.load(std::memory_order_acquire) != 0) return false;
+  FreeDmabufRing(v);
+  for (DmabufSlot& s : g_dmabuf_ring.slots) {
+    // Linear so VAAPI import needs no modifier support; the blit into a
+    // linear target costs the GPU a little and the CPU nothing.
+    s.bo = gbm_bo_create(v->gbm.device(), w, h, GBM_FORMAT_ABGR8888,
+                         GBM_BO_USE_RENDERING | GBM_BO_USE_LINEAR);
+    if (!s.bo) { FreeDmabufRing(v); return false; }
+    s.fd = gbm_bo_get_fd(s.bo);
+    s.stride = gbm_bo_get_stride(s.bo);
+    uint64_t mod = gbm_bo_get_modifier(s.bo);
+    s.modifier = (mod == DRM_FORMAT_MOD_INVALID_) ? 0 : mod;
+    if (s.fd < 0) { FreeDmabufRing(v); return false; }
+    const EGLint attrs[] = {
+        EGL_WIDTH, (EGLint)w, EGL_HEIGHT, (EGLint)h,
+        EGL_LINUX_DRM_FOURCC_EXT_, (EGLint)DRM_FORMAT_ABGR8888_,
+        EGL_DMA_BUF_PLANE0_FD_EXT_, s.fd,
+        EGL_DMA_BUF_PLANE0_OFFSET_EXT_, 0,
+        EGL_DMA_BUF_PLANE0_PITCH_EXT_, (EGLint)s.stride,
+        EGL_NONE};
+    s.image = fns.create_image(v->egl.display(), EGL_NO_CONTEXT,
+                               EGL_LINUX_DMA_BUF_EXT_, nullptr, attrs);
+    if (!s.image) { FreeDmabufRing(v); return false; }
+    glGenRenderbuffers(1, &s.rbo);
+    glBindRenderbuffer(GL_RENDERBUFFER, s.rbo);
+    fns.image_target_rbo(GL_RENDERBUFFER, s.image);
+    glBindRenderbuffer(GL_RENDERBUFFER, 0);
+    glGenFramebuffers(1, &s.fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, s.fbo);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                              GL_RENDERBUFFER, s.rbo);
+    GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    if (status != GL_FRAMEBUFFER_COMPLETE) { FreeDmabufRing(v); return false; }
+  }
+  g_dmabuf_ring.w = w;
+  g_dmabuf_ring.h = h;
+  return true;
+}
+
+// Draw the cursor into the bound draw framebuffer (the dmabuf slot) — the
+// GPU twin of BlendCursorOverlay above, for frames the CPU never sees.
+// Alpha-blends a 64x64 shape texture at the snapshot position. Presenting
+// thread; saves and restores every piece of GL state it touches, since it
+// runs inside the engine's present with Skia's state live.
+static void DrawCursorGpu(const flutter::FlCursorSnapshot& cur,
+                          uint32_t rw, uint32_t rh, int shift) {
+  static GLuint prog = 0, tex = 0;
+  static GLint u_rect = -1;
+  static int tex_shape = -1;
+  static bool failed = false;
+  if (failed) return;
+  const ZeroCopyFns& fns = GetZeroCopyFns();
+  if (prog == 0) {
+    const char* vs_src =
+        "#version 300 es\n"
+        "uniform vec4 u_rect;\n"
+        "out vec2 v_uv;\n"
+        "void main() {\n"
+        "  vec2 c = vec2(float(gl_VertexID & 1), float((gl_VertexID >> 1) & 1));\n"
+        "  v_uv = c;\n"
+        "  gl_Position = vec4(mix(u_rect.xy, u_rect.zw, c), 0.0, 1.0);\n"
+        "}\n";
+    const char* fs_src =
+        "#version 300 es\n"
+        "precision mediump float;\n"
+        "uniform sampler2D u_tex;\n"
+        "in vec2 v_uv;\n"
+        "out vec4 frag;\n"
+        "void main() { frag = texture(u_tex, v_uv); }\n";
+    auto compile = [](GLenum type, const char* src) -> GLuint {
+      GLuint sh = glCreateShader(type);
+      glShaderSource(sh, 1, &src, nullptr);
+      glCompileShader(sh);
+      GLint ok = 0;
+      glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
+      if (!ok) { glDeleteShader(sh); return 0; }
+      return sh;
+    };
+    GLuint vs = compile(GL_VERTEX_SHADER, vs_src);
+    GLuint fs = compile(GL_FRAGMENT_SHADER, fs_src);
+    if (!vs || !fs) {
+      if (vs) glDeleteShader(vs);
+      if (fs) glDeleteShader(fs);
+      failed = true;
+      fprintf(stderr, "[DrmView] cursor shader failed — recording cursor-less\n");
+      return;
+    }
+    prog = glCreateProgram();
+    glAttachShader(prog, vs);
+    glAttachShader(prog, fs);
+    glLinkProgram(prog);
+    glDeleteShader(vs);
+    glDeleteShader(fs);
+    GLint ok = 0;
+    glGetProgramiv(prog, GL_LINK_STATUS, &ok);
+    if (!ok) {
+      glDeleteProgram(prog);
+      prog = 0;
+      failed = true;
+      fprintf(stderr, "[DrmView] cursor shader failed — recording cursor-less\n");
+      return;
+    }
+    u_rect = glGetUniformLocation(prog, "u_rect");
+    glGenTextures(1, &tex);
+  }
+
+  GLint prev_prog = 0, prev_active = 0, prev_tex = 0, prev_vao = 0;
+  GLint prev_viewport[4] = {0, 0, 0, 0};
+  glGetIntegerv(GL_CURRENT_PROGRAM, &prev_prog);
+  glGetIntegerv(GL_ACTIVE_TEXTURE, &prev_active);
+  glActiveTexture(GL_TEXTURE0);
+  glGetIntegerv(GL_TEXTURE_BINDING_2D, &prev_tex);
+  glGetIntegerv(GL_VERTEX_ARRAY_BINDING_, &prev_vao);
+  glGetIntegerv(GL_VIEWPORT, prev_viewport);
+  GLboolean was_blend = glIsEnabled(GL_BLEND);
+  GLboolean was_scissor = glIsEnabled(GL_SCISSOR_TEST);
+  GLboolean was_depth = glIsEnabled(GL_DEPTH_TEST);
+  GLboolean was_stencil = glIsEnabled(GL_STENCIL_TEST);
+  GLboolean was_cull = glIsEnabled(GL_CULL_FACE);
+  GLint bsrgb = 0, bdrgb = 0, bsa = 0, bda = 0;
+  glGetIntegerv(GL_BLEND_SRC_RGB, &bsrgb);
+  glGetIntegerv(GL_BLEND_DST_RGB, &bdrgb);
+  glGetIntegerv(GL_BLEND_SRC_ALPHA, &bsa);
+  glGetIntegerv(GL_BLEND_DST_ALPHA, &bda);
+
+  glBindTexture(GL_TEXTURE_2D, tex);
+  if (tex_shape != static_cast<int>(cur.shape)) {
+    static uint8_t bitmap[64 * 64 * 4];
+    flutter::FlDrmCursor::RenderShapeRGBA(cur.shape, bitmap);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 64, 64, 0, GL_RGBA,
+                 GL_UNSIGNED_BYTE, bitmap);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    tex_shape = static_cast<int>(cur.shape);
+  }
+
+  glUseProgram(prog);
+  fns.bind_vertex_array(0);
+  glViewport(0, 0, (GLsizei)rw, (GLsizei)rh);
+  glDisable(GL_SCISSOR_TEST);
+  glDisable(GL_DEPTH_TEST);
+  glDisable(GL_STENCIL_TEST);
+  glDisable(GL_CULL_FACE);
+  glEnable(GL_BLEND);
+  glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+  // The slot holds a top-down image (the capture blit flips), so image y
+  // grows with NDC y: row 0 = NDC -1.
+  const float size = (float)(64u >> shift);
+  const float x0 = (float)(cur.x >> shift), y0 = (float)(cur.y >> shift);
+  glUniform4f(u_rect, x0 * 2.f / rw - 1.f, y0 * 2.f / rh - 1.f,
+              (x0 + size) * 2.f / rw - 1.f, (y0 + size) * 2.f / rh - 1.f);
+  glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+
+  if (!was_blend) glDisable(GL_BLEND);
+  glBlendFuncSeparate(bsrgb, bdrgb, bsa, bda);
+  if (was_scissor) glEnable(GL_SCISSOR_TEST);
+  if (was_depth) glEnable(GL_DEPTH_TEST);
+  if (was_stencil) glEnable(GL_STENCIL_TEST);
+  if (was_cull) glEnable(GL_CULL_FACE);
+  glViewport(prev_viewport[0], prev_viewport[1], prev_viewport[2],
+             prev_viewport[3]);
+  fns.bind_vertex_array((GLuint)prev_vao);
+  glBindTexture(GL_TEXTURE_2D, (GLuint)prev_tex);
+  glActiveTexture((GLenum)prev_active);
+  glUseProgram((GLuint)prev_prog);
+}
+
 // ─── Capture hooks (screenshot / video recording / debug stats) ─────────────
 // Observes the final presented pixels: call on the presenting thread with the
 // frame bound as the GL READ framebuffer, before the swap. Primary output
@@ -484,6 +750,10 @@ static void RunCaptureHooks(FlDrmView* v, uint32_t width, uint32_t height) {
     uint32_t rw = 0, rh = 0;
     int shift = 0;  // frame = full-res >> shift
     int dropped = 0;
+    // Zero-copy session: frames go to the dmabuf ring and the dmabuf
+    // callback straight from the presenting thread — no PBOs, no writer
+    // thread (th never starts).
+    bool dmabuf = false;
   };
   static RecWriter* rec = nullptr;
   constexpr int kRecRing = 3;
@@ -573,12 +843,14 @@ static void RunCaptureHooks(FlDrmView* v, uint32_t width, uint32_t height) {
   auto stop_rec = [&]() {
     for (int i = 0; i < kRecRing; i++)
       drain_slot((rec_slot + i) % kRecRing);
-    {
-      std::lock_guard<std::mutex> lk(rec->mu);
-      rec->done = true;
+    if (rec->th.joinable()) {  // dmabuf sessions never start the writer
+      {
+        std::lock_guard<std::mutex> lk(rec->mu);
+        rec->done = true;
+      }
+      rec->cv.notify_one();
+      rec->th.join();
     }
-    rec->cv.notify_one();
-    rec->th.join();
     if (rec->file) fclose(rec->file);
     if (rec->dropped)
       fprintf(stderr, "[DrmView] Recording dropped %d frames\n",
@@ -646,49 +918,86 @@ static void RunCaptureHooks(FlDrmView* v, uint32_t width, uint32_t height) {
       rec->shift = api_shift;
       rec->rw = std::max(1u, cw >> api_shift);
       rec->rh = std::max(1u, ch >> api_shift);
-      start_writer(rec);
+      // Zero-copy when the shell armed it: build (or recycle) the dmabuf
+      // ring now, with the GL context current. Failure sends the one-shot
+      // sentinel so the shell swaps to its pipe encoder, and the session
+      // continues as a plain CPU one.
+      if (g_api_record_dmabuf.load(std::memory_order_acquire) &&
+          v->record_dmabuf_callback) {
+        if (EnsureDmabufRing(v, rec->rw, rec->rh)) {
+          rec->dmabuf = true;
+        } else {
+          FlDrmRecordDmabufFrame sentinel = {};
+          sentinel.slot = -1;
+          sentinel.fd = -1;
+          v->record_dmabuf_callback(v->record_dmabuf_user_data, &sentinel);
+          fprintf(stderr,
+                  "[DrmView] dmabuf ring unavailable — CPU frames instead\n");
+        }
+      }
+      if (!rec->dmabuf) start_writer(rec);
       g_api_recording.store(true, std::memory_order_release);
-      fprintf(stderr, "[DrmView] Recording started -> callback (%ux%u)\n",
-              rec->rw, rec->rh);
+      fprintf(stderr, "[DrmView] Recording started -> %s (%ux%u)\n",
+              rec->dmabuf ? "dmabuf callback" : "callback", rec->rw, rec->rh);
     }
   }
 
   if (rec) {
     uint32_t w = width, h = height;
     uint32_t rw = rec->rw, rh = rec->rh;
-    static GLuint rec_fbo = 0;
-    static uint32_t fbo_w = 0, fbo_h = 0;
-    if (rec_fbo == 0 || fbo_w != rw || fbo_h != rh) {
-      if (rec_fbo == 0) glGenFramebuffers(1, &rec_fbo);
-      GLuint rbo = 0;
-      glGenRenderbuffers(1, &rbo);
-      glBindRenderbuffer(GL_RENDERBUFFER, rbo);
-      glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8_, rw, rh);
-      glBindFramebuffer(GL_FRAMEBUFFER, rec_fbo);
-      glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-                                GL_RENDERBUFFER, rbo);
-      fbo_w = rw;
-      fbo_h = rh;
-    }
-    if (rec_pbo[0] == 0) {
-      glGenBuffers(kRecRing, rec_pbo);
-    }
-    // Sized for THIS session — the debug and API sinks capture at different
-    // resolutions, so the ring can't be allocated once and forgotten.
-    if (rec_pbo_bytes != (size_t)rw * rh * 4) {
-      for (int i = 0; i < kRecRing; i++) {
-        glBindBuffer(GL_PIXEL_PACK_BUFFER_, rec_pbo[i]);
-        glBufferData(GL_PIXEL_PACK_BUFFER_, (GLsizeiptr)rw * rh * 4,
-                     nullptr, GL_STREAM_READ_);
+    const bool zc = rec->dmabuf;
+
+    // Zero-copy: claim a free ring slot before touching any GL — every
+    // slot still held by the encoder means it has fallen behind, and the
+    // right response is to drop this frame, not stall the present.
+    int zc_slot = -1;
+    if (zc) {
+      uint32_t busy = g_dmabuf_busy.load(std::memory_order_acquire);
+      for (int i = 0; i < kDmabufRing; i++) {
+        if (!(busy & (1u << i))) { zc_slot = i; break; }
       }
-      glBindBuffer(GL_PIXEL_PACK_BUFFER_, 0);
-      rec_pbo_bytes = (size_t)rw * rh * 4;
+      if (zc_slot < 0) {
+        rec->dropped++;
+        return;
+      }
     }
 
-    // The slot queued kRecRing presents ago is done — collect it first,
-    // then reuse it for this frame. The caller's READ framebuffer binding
-    // is the capture source; re-bind it after the downsample blit.
-    drain_slot(rec_slot);
+    static GLuint rec_fbo = 0;
+    static uint32_t fbo_w = 0, fbo_h = 0;
+    if (!zc) {
+      if (rec_fbo == 0 || fbo_w != rw || fbo_h != rh) {
+        if (rec_fbo == 0) glGenFramebuffers(1, &rec_fbo);
+        GLuint rbo = 0;
+        glGenRenderbuffers(1, &rbo);
+        glBindRenderbuffer(GL_RENDERBUFFER, rbo);
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8_, rw, rh);
+        glBindFramebuffer(GL_FRAMEBUFFER, rec_fbo);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                  GL_RENDERBUFFER, rbo);
+        fbo_w = rw;
+        fbo_h = rh;
+      }
+      if (rec_pbo[0] == 0) {
+        glGenBuffers(kRecRing, rec_pbo);
+      }
+      // Sized for THIS session — the debug and API sinks capture at
+      // different resolutions, so the ring can't be allocated once and
+      // forgotten.
+      if (rec_pbo_bytes != (size_t)rw * rh * 4) {
+        for (int i = 0; i < kRecRing; i++) {
+          glBindBuffer(GL_PIXEL_PACK_BUFFER_, rec_pbo[i]);
+          glBufferData(GL_PIXEL_PACK_BUFFER_, (GLsizeiptr)rw * rh * 4,
+                       nullptr, GL_STREAM_READ_);
+        }
+        glBindBuffer(GL_PIXEL_PACK_BUFFER_, 0);
+        rec_pbo_bytes = (size_t)rw * rh * 4;
+      }
+
+      // The slot queued kRecRing presents ago is done — collect it first,
+      // then reuse it for this frame. The caller's READ framebuffer binding
+      // is the capture source; re-bind it after the downsample blit.
+      drain_slot(rec_slot);
+    }
 
     // The capture source: the whole output, or the live crop (a window
     // recording — the shell re-points it as the window moves). Top-down
@@ -728,10 +1037,11 @@ static void RunCaptureHooks(FlDrmView* v, uint32_t width, uint32_t height) {
       }
     }
 
+    const GLuint target_fbo = zc ? g_dmabuf_ring.slots[zc_slot].fbo : rec_fbo;
     GLint read_fbo_binding = 0;
     glGetIntegerv(0x8CAA /* GL_READ_FRAMEBUFFER_BINDING */,
                   &read_fbo_binding);
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER_, rec_fbo);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER_, target_fbo);
     if (src_tex_name != 0 && tw > 0 && th > 0) {
       static GLuint src_fbo = 0;
       if (src_fbo == 0) glGenFramebuffers(1, &src_fbo);
@@ -751,21 +1061,15 @@ static void RunCaptureHooks(FlDrmView* v, uint32_t width, uint32_t height) {
       es3.blit(sx, (int)h - sy, sx + sw, (int)h - sy - sh,
                0, 0, rw, rh, GL_COLOR_BUFFER_BIT, GL_LINEAR);
     }
-    glBindFramebuffer(GL_READ_FRAMEBUFFER_, rec_fbo);
-    glBindBuffer(GL_PIXEL_PACK_BUFFER_, rec_pbo[rec_slot]);
-    glReadPixels(0, 0, rw, rh, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-    glBindBuffer(GL_PIXEL_PACK_BUFFER_, 0);
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glBindFramebuffer(GL_READ_FRAMEBUFFER_, read_fbo_binding);
-
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    rec_pbo_ts[rec_slot] =
+    const uint64_t ts_us =
         (uint64_t)ts.tv_sec * 1000000ull + ts.tv_nsec / 1000;
-    // Cursor state travels with the frame it was captured alongside; the
-    // writer paints it in, and only when the pointer is on this output.
-    // Crop-relative for window recordings (exact while the crop holds its
-    // start size; a mid-recording resize skews it with the scaling).
+    // Cursor state travels with the frame it was captured alongside; it is
+    // painted in (GPU or writer thread) only when the pointer is on this
+    // output. Crop-relative for window recordings (exact while the crop
+    // holds its start size; a mid-recording resize skews it with the
+    // scaling).
     flutter::FlCursorSnapshot cur = v->cursor.Snapshot();
     if (cur.crtc_id != v->display.crtc_id()) {
       cur.visible = false;
@@ -776,9 +1080,42 @@ static void RunCaptureHooks(FlDrmView* v, uint32_t width, uint32_t height) {
     }
     cur.x -= sx;
     cur.y -= sy;
-    rec_pbo_cursor[rec_slot] = cur;
-    rec_pbo_pending[rec_slot] = true;
-    rec_slot = (rec_slot + 1) % kRecRing;
+
+    if (zc) {
+      // The frame is already in shareable memory — draw the cursor on the
+      // GPU, submit, and hand the fd over. glFlush only queues the work;
+      // ordering against the encoder's reads rides the kernel's implicit
+      // dma-buf fencing (plus the ring: a slot comes back long before its
+      // turn recurs).
+      if (cur.visible) DrawCursorGpu(cur, rw, rh, rec->shift);
+      glFlush();
+      glBindFramebuffer(GL_FRAMEBUFFER, 0);
+      glBindFramebuffer(GL_READ_FRAMEBUFFER_, read_fbo_binding);
+      const DmabufSlot& s = g_dmabuf_ring.slots[zc_slot];
+      FlDrmRecordDmabufFrame fr = {};
+      fr.slot = zc_slot;
+      fr.fd = s.fd;
+      fr.width = rw;
+      fr.height = rh;
+      fr.stride = s.stride;
+      fr.offset = 0;
+      fr.fourcc = DRM_FORMAT_ABGR8888_;
+      fr.modifier = s.modifier;
+      fr.timestamp_us = ts_us;
+      g_dmabuf_busy.fetch_or(1u << zc_slot, std::memory_order_acq_rel);
+      v->record_dmabuf_callback(v->record_dmabuf_user_data, &fr);
+    } else {
+      glBindFramebuffer(GL_READ_FRAMEBUFFER_, rec_fbo);
+      glBindBuffer(GL_PIXEL_PACK_BUFFER_, rec_pbo[rec_slot]);
+      glReadPixels(0, 0, rw, rh, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+      glBindBuffer(GL_PIXEL_PACK_BUFFER_, 0);
+      glBindFramebuffer(GL_FRAMEBUFFER, 0);
+      glBindFramebuffer(GL_READ_FRAMEBUFFER_, read_fbo_binding);
+      rec_pbo_ts[rec_slot] = ts_us;
+      rec_pbo_cursor[rec_slot] = cur;
+      rec_pbo_pending[rec_slot] = true;
+      rec_slot = (rec_slot + 1) % kRecRing;
+    }
   }
 }
 
@@ -2349,6 +2686,27 @@ void fl_drm_view_set_record_frame_callback(FlDrmView* view,
   }
   view->record_frame_user_data = user_data;
   view->record_frame_callback = callback;
+}
+
+void fl_drm_view_set_record_dmabuf_callback(FlDrmView* view,
+                                            FlDrmRecordDmabufCallback callback,
+                                            void* user_data) {
+  if (!view) {
+    return;
+  }
+  view->record_dmabuf_user_data = user_data;
+  view->record_dmabuf_callback = callback;
+}
+
+void fl_drm_view_recording_set_dmabuf(int enable) {
+  g_api_record_dmabuf.store(enable != 0, std::memory_order_release);
+}
+
+void fl_drm_view_recording_release_dmabuf_slot(int slot) {
+  if (slot < 0 || slot >= kDmabufRing) {
+    return;
+  }
+  g_dmabuf_busy.fetch_and(~(1u << slot), std::memory_order_acq_rel);
 }
 
 void fl_drm_view_recording_start(FlDrmView* view, int downscale_shift) {
