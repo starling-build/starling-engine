@@ -143,6 +143,20 @@ FL_DRM_EXPORT void fl_drm_view_recording_start_cropped(FlDrmView* view,
                                                        int w, int h);
 FL_DRM_EXPORT void fl_drm_view_recording_set_crop(int x, int y,
                                                   int w, int h);
+// TRUE app capture: record an external texture (a window's own composited
+// content, resolved per present through the compositor's texture callback)
+// instead of the framebuffer. Overlapping windows and position never show;
+// the resolve also refreshes dirty client textures, so content stays live
+// even minimized. |w|,|h| freeze the output size (the source scales to
+// fit). No cursor — the capture is window-space. A present where the
+// texture cannot be resolved delivers no frame. |content_top_down|: pass
+// the window's flipTextureY — Wayland client buffers are top-down (1),
+// first-party children render bottom-up into GL FBOs (0, blit flips).
+FL_DRM_EXPORT void fl_drm_view_recording_start_texture(FlDrmView* view,
+                                                       int downscale_shift,
+                                                       int64_t texture_id,
+                                                       int w, int h,
+                                                       int content_top_down);
 FL_DRM_EXPORT void fl_drm_view_recording_stop(FlDrmView* view);
 // Non-zero while a callback-sink recording session is live on the raster
 // thread (i.e. between the start request being consumed and the stop

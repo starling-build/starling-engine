@@ -86,6 +86,15 @@ static std::atomic<bool> g_api_recording{false};
 // set_crop while a window recording tracks its window), read per present.
 // Torn reads across the four values skew one frame by a few px — harmless.
 static std::atomic<int> g_api_crop[4] = {0, 0, 0, 0};
+// True app capture: an external texture id (>= 0) to record INSTEAD of the
+// framebuffer — the window's own composited content, resolved through the
+// same callback the compositor uses, so overlap and position are invisible
+// to the recording. -1 = capture the output/crop.
+static std::atomic<int64_t> g_api_record_texture{-1};
+// Whether the recorded texture's content is top-down (Wayland client
+// buffers) or bottom-up (first-party children render into GL FBOs) — the
+// blit flips the latter. The scene has the same split: flipTextureY.
+static std::atomic<bool> g_api_record_tex_topdown{false};
 
 // VT switching — signal handlers run on any thread, set flags for event loop.
 // SIGUSR2 = VT release (kernel wants us to give up the VT).
@@ -694,13 +703,54 @@ static void RunCaptureHooks(FlDrmView* v, uint32_t width, uint32_t height) {
       sh = std::min(std::max(g_api_crop[3].load(), 1), (int)h - sy);
     }
 
+    // True app capture: resolve the window's texture the way compositing
+    // does (same callback, same raster thread) and read THAT instead of
+    // the framebuffer. The resolve also refreshes a dirty client texture,
+    // so content stays live even while the window is minimized or covered.
+    int64_t src_tex_id = rec->cb
+        ? g_api_record_texture.load(std::memory_order_relaxed) : -1;
+    GLuint src_tex_name = 0;
+    int tw = 0, th = 0;
+    if (src_tex_id >= 0) {
+      FlutterOpenGLTexture tex = {};
+      if (v->external_texture_callback &&
+          v->external_texture_callback(v->external_texture_user_data,
+                                       src_tex_id, 0, 0, &tex) &&
+          tex.name != 0) {
+        src_tex_name = (GLuint)tex.name;
+        tw = (int)tex.width;
+        th = (int)tex.height;
+      } else {
+        // Window texture unresolvable this present — skip the frame (no
+        // bindings touched yet); the shell ends the session when the
+        // window is truly gone.
+        return;
+      }
+    }
+
     GLint read_fbo_binding = 0;
     glGetIntegerv(0x8CAA /* GL_READ_FRAMEBUFFER_BINDING */,
                   &read_fbo_binding);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER_, rec_fbo);
-    // Flipped source rect: GL rows are bottom-up, output is top-down.
-    es3.blit(sx, (int)h - sy, sx + sw, (int)h - sy - sh,
-             0, 0, rw, rh, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+    if (src_tex_name != 0 && tw > 0 && th > 0) {
+      static GLuint src_fbo = 0;
+      if (src_fbo == 0) glGenFramebuffers(1, &src_fbo);
+      glBindFramebuffer(GL_READ_FRAMEBUFFER_, src_fbo);
+      glFramebufferTexture2D(GL_READ_FRAMEBUFFER_, GL_COLOR_ATTACHMENT0,
+                             GL_TEXTURE_2D, src_tex_name, 0);
+      // Wayland client buffers are top-down (straight blit); first-party
+      // children render into GL FBOs, bottom-up (flip) — the same split
+      // the scene handles as flipTextureY.
+      if (g_api_record_tex_topdown.load(std::memory_order_relaxed)) {
+        es3.blit(0, 0, tw, th, 0, 0, rw, rh, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+      } else {
+        es3.blit(0, th, tw, 0, 0, 0, rw, rh, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+      }
+    } else {
+      // Flipped source rect: GL rows are bottom-up, output is top-down.
+      es3.blit(sx, (int)h - sy, sx + sw, (int)h - sy - sh,
+               0, 0, rw, rh, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+    }
     glBindFramebuffer(GL_READ_FRAMEBUFFER_, rec_fbo);
     glBindBuffer(GL_PIXEL_PACK_BUFFER_, rec_pbo[rec_slot]);
     glReadPixels(0, 0, rw, rh, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
@@ -718,6 +768,10 @@ static void RunCaptureHooks(FlDrmView* v, uint32_t width, uint32_t height) {
     // start size; a mid-recording resize skews it with the scaling).
     flutter::FlCursorSnapshot cur = v->cursor.Snapshot();
     if (cur.crtc_id != v->display.crtc_id()) {
+      cur.visible = false;
+    }
+    if (src_tex_id >= 0) {
+      // App capture is window-space; the cursor lives in screen-space.
       cur.visible = false;
     }
     cur.x -= sx;
@@ -2305,7 +2359,25 @@ void fl_drm_view_recording_start_cropped(FlDrmView* view, int downscale_shift,
                                           int x, int y, int w, int h) {
   if (downscale_shift < 0) downscale_shift = 0;
   if (downscale_shift > 3) downscale_shift = 3;
+  g_api_record_texture.store(-1, std::memory_order_relaxed);
   fl_drm_view_recording_set_crop(x, y, w, h);
+  g_api_record_start.store(downscale_shift, std::memory_order_release);
+  if (view && view->engine) {
+    FlutterEngineScheduleFrame(view->engine);
+  }
+}
+
+void fl_drm_view_recording_start_texture(FlDrmView* view, int downscale_shift,
+                                          int64_t texture_id,
+                                          int w, int h, int content_top_down) {
+  if (downscale_shift < 0) downscale_shift = 0;
+  if (downscale_shift > 3) downscale_shift = 3;
+  g_api_record_tex_topdown.store(content_top_down != 0,
+                                 std::memory_order_relaxed);
+  g_api_record_texture.store(texture_id, std::memory_order_relaxed);
+  // The crop dims freeze the output size (the source blit scales to fit);
+  // origin is meaningless for a texture source.
+  fl_drm_view_recording_set_crop(0, 0, w, h);
   g_api_record_start.store(downscale_shift, std::memory_order_release);
   if (view && view->engine) {
     FlutterEngineScheduleFrame(view->engine);
