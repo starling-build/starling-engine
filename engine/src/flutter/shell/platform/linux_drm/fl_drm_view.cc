@@ -2546,14 +2546,29 @@ void fl_drm_view_run(FlDrmView* view) {
       }
     }
 
-    // Poll on wakeup pipe (signaled when UI tasks are posted).
-    if (view->ui_wakeup_read_fd >= 0) {
-      struct pollfd pfd = {view->ui_wakeup_read_fd, POLLIN, 0};
-      poll(&pfd, 1, timeout_ms);
+    // Poll on the wakeup pipe (signaled when UI tasks are posted) AND the
+    // GCD main queue handle, so a DispatchQueue.main.async from another
+    // thread wakes this loop instead of waiting out the timeout. The handle
+    // is an eventfd the drain callback does NOT reset — it must be read()
+    // once signaled, or it stays readable and the poll spins. Reading it
+    // BEFORE the next drain means an enqueue after the read re-signals the
+    // fd: a wakeup can be spurious but never lost.
+    if (view->ui_wakeup_read_fd >= 0 || gcd_fd >= 0) {
+      struct pollfd pfds[2] = {
+          {view->ui_wakeup_read_fd, POLLIN, 0},  // fd -1: poll ignores it
+          {gcd_fd, POLLIN, 0},
+      };
+      poll(pfds, 2, timeout_ms);
       // Drain the pipe
-      if (pfd.revents & POLLIN) {
+      if (pfds[0].revents & POLLIN) {
         char buf[64];
         while (read(view->ui_wakeup_read_fd, buf, sizeof(buf)) > 0) {}
+      }
+      // Clear the GCD eventfd; the drain at the top of the loop does the work.
+      if (pfds[1].revents & POLLIN) {
+        uint64_t v = 0;
+        ssize_t r = read(gcd_fd, &v, sizeof(v));
+        (void)r;
       }
     } else {
       if (timeout_ms > 0) usleep(timeout_ms * 1000);
