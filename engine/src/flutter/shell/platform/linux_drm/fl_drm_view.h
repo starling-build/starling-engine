@@ -249,6 +249,13 @@ FL_DRM_EXPORT void fl_drm_view_set_present_callback(FlDrmView* view,
 // active DRM mode. For wl_output.mode advertisement.
 FL_DRM_EXPORT uint32_t fl_drm_view_get_refresh_mhz(FlDrmView* view);
 
+// The primary output's scale, as the view resolved it at creation:
+// $FLUTTER_DRM_DPI when that is set and non-empty, otherwise derived from the
+// panel (EDID physical size when the connector reports one, pixel count when
+// it does not). Read this instead of assuming a default — the shell's own
+// coordinate conversion and every child app's scale follow from it.
+FL_DRM_EXPORT double fl_drm_view_get_scale(FlDrmView* view);
+
 // ─── Multi-output ────────────────────────────────────────────────────────────
 // Number of connected outputs (each with its own swap chain). The implicit
 // Flutter view (id 0) always renders to the primary output.

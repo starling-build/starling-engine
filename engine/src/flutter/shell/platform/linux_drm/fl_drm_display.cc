@@ -209,6 +209,8 @@ bool FlDrmDisplay::Initialize(FlDrmSeat* seat) {
     }
 
     out.connector_id = c->connector_id;
+    out.mm_width = c->mmWidth;
+    out.mm_height = c->mmHeight;
     if (!SelectMode(c, mode_request, &out.mode)) {
       drmModeFreeConnector(c);
       continue;
@@ -343,6 +345,8 @@ void FlDrmDisplay::RescanConnectors(std::vector<size_t>* added,
       continue;
     }
     out.connector_id = c->connector_id;
+    out.mm_width = c->mmWidth;
+    out.mm_height = c->mmHeight;
     if (!SelectMode(c, mode_request, &out.mode)) {
       drmModeFreeConnector(c);
       continue;

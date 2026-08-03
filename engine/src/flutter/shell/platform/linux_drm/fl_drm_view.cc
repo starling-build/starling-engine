@@ -188,6 +188,26 @@ static void InitGCDIntegration() {
 
 #include "fl_drm_cursor.h"
 #include "fl_drm_display.h"
+
+// The scale to render the primary at when FLUTTER_DRM_DPI does not say.
+//
+// Integer scales only. A fractional scale cannot land text stems on the pixel
+// grid and reads as blurry — a 1.7 default shipped once and was a crispness
+// regression.
+//
+// With EDID the panel's real pixel density decides, and 150 dpi is a clean
+// divide: a 24" 1080p desktop panel is ~92, a 27" 4K one ~163, a 13" 2560x1600
+// laptop ~227. Without EDID the connector reports 0 mm and the pixel count is
+// all there is, so only a 4K-class mode earns 2x — which is what keeps a
+// 1280x800 virtual display (no EDID, every VM) from rendering at half its
+// resolution.
+static double DeriveScale(const flutter::FlDrmOutput& out) {
+  if (out.mm_width > 0 && out.mm_height > 0) {
+    const double dpi = out.width() * 25.4 / static_cast<double>(out.mm_width);
+    return dpi >= 150.0 ? 2.0 : 1.0;
+  }
+  return out.width() >= 3200 ? 2.0 : 1.0;
+}
 #include "fl_drm_egl.h"
 #include "fl_drm_gbm.h"
 #include "fl_drm_input.h"
@@ -1814,10 +1834,16 @@ FlDrmView* fl_drm_view_create(const char* assets_path,
 
   // The primary's pixel ratio: used for its window metrics and its pointer
   // region (event coords stay physical primary pixels either way).
+  //
+  // FLUTTER_DRM_DPI overrides; the empty string does not, because a bare
+  // getenv() cannot tell "" from unset and an empty forward would otherwise
+  // read as a scale of 0.
   double primary_pixel_ratio = 1.0;
   {
     const char* dpi_env = getenv("FLUTTER_DRM_DPI");
-    primary_pixel_ratio = dpi_env ? atof(dpi_env) : 1.0;
+    primary_pixel_ratio = (dpi_env && *dpi_env)
+                              ? atof(dpi_env)
+                              : DeriveScale(view->display.primary());
     if (primary_pixel_ratio < 0.5) primary_pixel_ratio = 0.5;
     if (primary_pixel_ratio > 4.0) primary_pixel_ratio = 4.0;
   }
@@ -2835,6 +2861,17 @@ uint32_t fl_drm_view_get_refresh_mhz(FlDrmView* view) {
     return 0;
   }
   return view->display.mode().vrefresh * 1000;
+}
+
+double fl_drm_view_get_scale(FlDrmView* view) {
+  if (!view) {
+    return 1.0;
+  }
+  const size_t p = view->display.primary_index();
+  if (p >= view->placements.size()) {
+    return 1.0;
+  }
+  return view->placements[p].scale;
 }
 
 void fl_drm_view_destroy(FlDrmView* view) {

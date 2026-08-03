@@ -20,6 +20,11 @@ struct FlDrmOutput {
   uint32_t crtc_id = 0;
   drmModeModeInfo mode = {};
   char name[32] = {0};  // e.g. "HDMI-A-1", "DP-1"
+  // The panel's physical size in millimetres, as EDID reports it. Zero when
+  // the connector carries no EDID — every virtual display, and some KVMs —
+  // so a reader must treat 0 as "unknown", never as a real measurement.
+  uint32_t mm_width = 0;
+  uint32_t mm_height = 0;
   // Cleared when the connector disconnects (hotplug). The slot stays —
   // indexes are stable — and is revived if the connector returns.
   bool alive = true;
