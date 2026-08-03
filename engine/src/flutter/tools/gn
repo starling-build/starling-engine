@@ -13,6 +13,7 @@ import multiprocessing
 import os
 import platform
 import re
+import shutil
 import subprocess
 import sys
 
@@ -311,19 +312,26 @@ def setup_apple_sdks():
 
 def get_repository_version(repository):
   'Returns the Git HEAD for the supplied repository path as a string.'
+  # These versions are stamped into the build for provenance only, so a
+  # checkout that cannot supply one is not a reason to refuse to build. A
+  # source-only tree — a distro package build, say — has no skia or dart
+  # repository beside the engine and may carry no git metadata at all.
   if not os.path.exists(repository):
-    raise IOError('path does not exist')
+    return 'unknown'
 
   git = 'git'
   if sys.platform.startswith(('cygwin', 'win')):
     git = 'git.bat'
-  version = subprocess.check_output([
-      git,
-      '-C',
-      repository,
-      'rev-parse',
-      'HEAD',
-  ])
+  try:
+    version = subprocess.check_output([
+        git,
+        '-C',
+        repository,
+        'rev-parse',
+        'HEAD',
+    ], stderr=subprocess.DEVNULL)
+  except (subprocess.CalledProcessError, OSError):
+    return 'unknown'
 
   return str(version.strip(), 'utf-8')
 
@@ -342,7 +350,16 @@ def get_content_hash():
     hash_command = hash_command + ['cmd.exe', '/c', 'powershell.exe']
   hash_command = hash_command + [hash_method]
 
-  version = subprocess.check_output(hash_command)
+  # content_aware_hash lives in the Flutter framework checkout, two levels
+  # above src/ — a tree holding only the engine does not have it. Same
+  # reasoning as get_repository_version: provenance, not correctness.
+  if not os.path.exists(hash_method):
+    return 'unknown'
+
+  try:
+    version = subprocess.check_output(hash_command)
+  except (subprocess.CalledProcessError, OSError):
+    return 'unknown'
 
   return str(version.strip(), 'utf-8')
 
@@ -1276,6 +1293,31 @@ def validate_args(args):
     sys.exit(-1)
 
 
+def gn_binary(exe):
+  """Returns the gn executable to drive the build with.
+
+  $STARLING_GN wins, then the copy a gclient checkout vendors, then whatever
+  `gn` is on PATH. A tree built from source alone has no vendored copy, and a
+  system gn does the job.
+  """
+  override = os.environ.get('STARLING_GN')
+  if override:
+    return override
+
+  vendored = '%s/flutter/third_party/gn/gn%s' % (SRC_ROOT, exe)
+  if os.path.exists(vendored):
+    return vendored
+
+  system = shutil.which('gn%s' % exe)
+  if system:
+    return system
+
+  raise Exception(
+      'no gn binary found: %s does not exist, none on PATH, and $STARLING_GN '
+      'is unset' % vendored
+  )
+
+
 def main(argv):
   args = parse_args(argv)
   validate_args(args)
@@ -1283,7 +1325,7 @@ def main(argv):
   exe = '.exe' if sys.platform.startswith(('cygwin', 'win')) else ''
 
   command = [
-      '%s/flutter/third_party/gn/gn%s' % (SRC_ROOT, exe),
+      gn_binary(exe),
       'gen',
       '--check',
       '--export-compile-commands',

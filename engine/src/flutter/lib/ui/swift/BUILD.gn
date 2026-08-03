@@ -26,24 +26,49 @@ config("swift_bridge_allow_undefined") {
   }
 }
 
+# <swift/bridging> ships with the Swift toolchain, so a path to it is
+# unavoidable here — unlike the Swift packages downstream, which resolve it
+# from a vendored copy. It is overridable because not every build uses a
+# Swiftly-managed toolchain: a distro packager builds against the system
+# Swift, and until this existed had to patch the line below by hand.
+#
+#   $STARLING_SWIFT_INCLUDE    the include directory itself, for a layout
+#                              that is not <toolchain>/usr/include (Arch
+#                              puts it at /usr/lib/swift/include)
+#   $STARLING_SWIFT_TOOLCHAIN  the toolchain root, the same variable
+#                              starling's bootstrap.sh reads
+#
+# Nested rather than a flat else-if chain: GN rejects a variable that is
+# assigned and then never read, so the toolchain root must only be fetched
+# on the branch that actually consumes it.
+_swift_include_override = getenv("STARLING_SWIFT_INCLUDE")
+
+if (_swift_include_override != "") {
+  _swift_toolchain_include = _swift_include_override
+} else {
+  _swift_toolchain_root = getenv("STARLING_SWIFT_TOOLCHAIN")
+  if (_swift_toolchain_root != "") {
+    _swift_toolchain_include = _swift_toolchain_root + "/usr/include"
+  } else if (is_mac || is_ios) {
+    _swift_toolchain_include =
+        getenv("HOME") +
+        "/Library/Developer/Toolchains/swift-6.2.1-RELEASE.xctoolchain/usr/include"
+  } else {
+    _swift_toolchain_include =
+        getenv("HOME") + "/.local/share/swiftly/toolchains/6.2.4/usr/include"
+  }
+}
+
 config("swift_bridge_config") {
   include_dirs = [ "." ]
 
   # Visibility annotations for shared library exports
-  if (is_mac || is_ios) {
+  if (is_mac || is_ios || is_linux) {
     cflags = [
       "-fvisibility=default",
       # Swift toolchain headers for <swift/bridging>
       "-isystem",
-      getenv("HOME") + "/Library/Developer/Toolchains/swift-6.2.1-RELEASE.xctoolchain/usr/include",
-    ]
-  }
-  if (is_linux) {
-    cflags = [
-      "-fvisibility=default",
-      # Swift toolchain headers for <swift/bridging>
-      "-isystem",
-      getenv("HOME") + "/.local/share/swiftly/toolchains/6.2.4/usr/include",
+      _swift_toolchain_include,
     ]
   }
 }
