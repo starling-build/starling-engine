@@ -103,6 +103,12 @@ static std::atomic<bool> g_api_record_tex_topdown{false};
 static std::atomic<bool> g_api_record_dmabuf{false};
 constexpr int kDmabufRing = 4;
 static std::atomic<uint32_t> g_dmabuf_busy{0};
+// App capture: bumped by the shell whenever the RECORDED window commits new
+// content. A window's pixels cannot change without one, so a present that
+// carries no new commit would encode a byte-identical frame — the capture
+// skips those (bounded by kRecKeepaliveUs so the timeline can't drift).
+static std::atomic<uint64_t> g_api_record_epoch{0};
+constexpr uint64_t kRecKeepaliveUs = 300000;  // 0.3s
 
 // VT switching — signal handlers run on any thread, set flags for event loop.
 // SIGUSR2 = VT release (kernel wants us to give up the VT).
@@ -754,6 +760,12 @@ static void RunCaptureHooks(FlDrmView* v, uint32_t width, uint32_t height) {
     // callback straight from the presenting thread — no PBOs, no writer
     // thread (th never starts).
     bool dmabuf = false;
+    // App-capture redundancy skip: the commit epoch and wall clock of the
+    // last delivered frame, and how many presents were skipped as
+    // unchanged (logged at stop alongside drops).
+    uint64_t last_epoch = 0;
+    uint64_t last_frame_us = 0;
+    int skipped = 0;
   };
   static RecWriter* rec = nullptr;
   constexpr int kRecRing = 3;
@@ -855,6 +867,9 @@ static void RunCaptureHooks(FlDrmView* v, uint32_t width, uint32_t height) {
     if (rec->dropped)
       fprintf(stderr, "[DrmView] Recording dropped %d frames\n",
               rec->dropped);
+    if (rec->skipped)
+      fprintf(stderr, "[DrmView] Recording skipped %d unchanged frames\n",
+              rec->skipped);
     fprintf(stderr, "[DrmView] Recording stopped\n");
     delete rec;
     rec = nullptr;
@@ -947,19 +962,55 @@ static void RunCaptureHooks(FlDrmView* v, uint32_t width, uint32_t height) {
     uint32_t rw = rec->rw, rh = rec->rh;
     const bool zc = rec->dmabuf;
 
+    // App capture: nothing can have changed in the recorded window unless
+    // it committed since the last frame we took, so drop this present
+    // rather than encode a byte-identical copy. Bounded — after
+    // kRecKeepaliveUs a frame goes out regardless, so a session that ends
+    // during a long still stretch still carries the right duration.
+    if (rec->cb && g_api_record_texture.load(std::memory_order_relaxed) >= 0) {
+      struct timespec sk;
+      clock_gettime(CLOCK_MONOTONIC, &sk);
+      const uint64_t now_us =
+          (uint64_t)sk.tv_sec * 1000000ull + sk.tv_nsec / 1000;
+      const uint64_t epoch =
+          g_api_record_epoch.load(std::memory_order_acquire);
+      if (rec->last_frame_us != 0 && epoch == rec->last_epoch &&
+          now_us - rec->last_frame_us < kRecKeepaliveUs) {
+        rec->skipped++;
+        return;
+      }
+      rec->last_epoch = epoch;
+      rec->last_frame_us = now_us;
+    }
+
     // Zero-copy: claim a free ring slot before touching any GL — every
     // slot still held by the encoder means it has fallen behind, and the
     // right response is to drop this frame, not stall the present.
+    //
+    // The search ROTATES. Taking the first free slot every time looks
+    // harmless — the encoder usually has released slot 0 by the next
+    // present, so slot 0 is free and gets picked again — but then the
+    // compositor's blit into slot 0 and the encoder's read of slot 0 are
+    // the same buffer one frame apart, and the kernel's implicit dma-buf
+    // fencing serializes them into a lockstep round trip: blit, encode,
+    // wait, blit. Measured, that pinned presents to every third vsync
+    // (100ms on a 30Hz panel) no matter how small the capture, so a
+    // 660x948 window recorded at the same 10fps as the whole 4K screen.
+    // Rotating hands the compositor a different buffer than the one being
+    // read, which is the entire point of having a ring.
+    static int zc_cursor = 0;
     int zc_slot = -1;
     if (zc) {
       uint32_t busy = g_dmabuf_busy.load(std::memory_order_acquire);
       for (int i = 0; i < kDmabufRing; i++) {
-        if (!(busy & (1u << i))) { zc_slot = i; break; }
+        int cand = (zc_cursor + i) % kDmabufRing;
+        if (!(busy & (1u << cand))) { zc_slot = cand; break; }
       }
       if (zc_slot < 0) {
         rec->dropped++;
         return;
       }
+      zc_cursor = (zc_slot + 1) % kDmabufRing;
     }
 
     static GLuint rec_fbo = 0;
@@ -2700,6 +2751,10 @@ void fl_drm_view_set_record_dmabuf_callback(FlDrmView* view,
 
 void fl_drm_view_recording_set_dmabuf(int enable) {
   g_api_record_dmabuf.store(enable != 0, std::memory_order_release);
+}
+
+void fl_drm_view_recording_notify_source_changed(void) {
+  g_api_record_epoch.fetch_add(1, std::memory_order_release);
 }
 
 void fl_drm_view_recording_release_dmabuf_slot(int slot) {

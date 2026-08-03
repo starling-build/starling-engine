@@ -210,6 +210,14 @@ FL_DRM_EXPORT void fl_drm_view_set_record_dmabuf_callback(
 FL_DRM_EXPORT void fl_drm_view_recording_set_dmabuf(int enable);
 FL_DRM_EXPORT void fl_drm_view_recording_release_dmabuf_slot(int slot);
 
+// App capture only: tell the recorder the RECORDED window just committed
+// new content. Its pixels cannot change without one, so between commits the
+// capture skips presents instead of encoding byte-identical frames — call
+// this from wherever that window's texture is refreshed, from any thread.
+// Missing a call costs at most a 0.3s keepalive frame, never a wrong
+// duration; calling it too often merely restores the old behaviour.
+FL_DRM_EXPORT void fl_drm_view_recording_notify_source_changed(void);
+
 // Cursor shapes — must stay in sync with flutter::CursorShape.
 typedef enum {
   FL_DRM_CURSOR_DEFAULT = 0,
