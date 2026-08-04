@@ -794,11 +794,17 @@ static void RunCaptureHooks(FlDrmView* v, uint32_t width, uint32_t height) {
     uint64_t last_frame_us = 0;
     int skipped = 0;
     // Capture rate cap (g_api_record_max_fps at start): presents inside
-    // the interval skip capture before touching any GL. Slack of a tenth,
-    // same as the shell's drain cap, so present jitter cannot drop two in
-    // a row.
+    // the interval skip capture before touching any GL. Paced against an
+    // ABSOLUTE schedule (next_due += interval), not the last capture —
+    // relative pacing loses a frame permanently every time the desktop
+    // misses a present slot (a client stalling 2-3 vsyncs left recordings
+    // at ~27.6fps of a 30fps target: intervals were 33ms or 44-67ms,
+    // never less, because nothing ever caught back up). With a schedule,
+    // the present after a gap captures immediately and repays the debt;
+    // the clamp caps that debt at one frame so a long still stretch
+    // cannot bank a burst.
     uint64_t min_interval_us = 0;
-    uint64_t last_cap_us = 0;
+    uint64_t next_due_us = 0;
     int rate_skipped = 0;
   };
   static RecWriter* rec = nullptr;
@@ -1025,18 +1031,23 @@ static void RunCaptureHooks(FlDrmView* v, uint32_t width, uint32_t height) {
 
     // Rate cap: a present inside the capture interval takes no slot, no
     // blit, no flush — it costs one clock read. Applied to both sinks;
-    // the shell's own downstream cap stays as the safety net.
+    // the shell's own downstream cap stays as the safety net. Absolute
+    // schedule with one frame of catch-up debt (see RecWriter).
     if (rec->min_interval_us != 0) {
       struct timespec rc;
       clock_gettime(CLOCK_MONOTONIC, &rc);
       const uint64_t rc_us =
           (uint64_t)rc.tv_sec * 1000000ull + rc.tv_nsec / 1000;
-      if (rec->last_cap_us != 0 &&
-          rc_us - rec->last_cap_us < rec->min_interval_us * 9 / 10) {
+      const uint64_t slack = rec->min_interval_us / 10;
+      if (rec->next_due_us == 0) rec->next_due_us = rc_us;
+      if (rc_us + slack < rec->next_due_us) {
         rec->rate_skipped++;
         return;
       }
-      rec->last_cap_us = rc_us;
+      rec->next_due_us += rec->min_interval_us;
+      if (rec->next_due_us + rec->min_interval_us < rc_us) {
+        rec->next_due_us = rc_us - rec->min_interval_us;
+      }
     }
 
     // Zero-copy: claim a free ring slot before touching any GL — every
