@@ -101,6 +101,13 @@ static std::atomic<bool> g_api_record_tex_topdown{false};
 // touched off the presenting thread — release_dmabuf_slot clears bits from
 // the encoder's thread while presents test-and-set them.
 static std::atomic<bool> g_api_record_dmabuf{false};
+// Capture rate cap, frames/sec (0 = one capture per present). Read at each
+// session start. Without it the capture runs at the PRESENT rate — on a
+// 90Hz panel that is three 2560x1600 blits into linear memory for every
+// frame a 30fps encoder keeps, and every one of them rides the present
+// path ahead of the swap. The shell still enforces its own cap downstream;
+// this one exists so the skipped frames cost nothing at all.
+static std::atomic<int> g_api_record_max_fps{0};
 constexpr int kDmabufRing = 4;
 static std::atomic<uint32_t> g_dmabuf_busy{0};
 // App capture: bumped by the shell whenever the RECORDED window commits new
@@ -786,6 +793,13 @@ static void RunCaptureHooks(FlDrmView* v, uint32_t width, uint32_t height) {
     uint64_t last_epoch = 0;
     uint64_t last_frame_us = 0;
     int skipped = 0;
+    // Capture rate cap (g_api_record_max_fps at start): presents inside
+    // the interval skip capture before touching any GL. Slack of a tenth,
+    // same as the shell's drain cap, so present jitter cannot drop two in
+    // a row.
+    uint64_t min_interval_us = 0;
+    uint64_t last_cap_us = 0;
+    int rate_skipped = 0;
   };
   static RecWriter* rec = nullptr;
   constexpr int kRecRing = 3;
@@ -890,6 +904,10 @@ static void RunCaptureHooks(FlDrmView* v, uint32_t width, uint32_t height) {
     if (rec->skipped)
       fprintf(stderr, "[DrmView] Recording skipped %d unchanged frames\n",
               rec->skipped);
+    if (rec->rate_skipped)
+      fprintf(stderr,
+              "[DrmView] Recording rate cap skipped %d presents\n",
+              rec->rate_skipped);
     fprintf(stderr, "[DrmView] Recording stopped\n");
     delete rec;
     rec = nullptr;
@@ -953,6 +971,8 @@ static void RunCaptureHooks(FlDrmView* v, uint32_t width, uint32_t height) {
       rec->shift = api_shift;
       rec->rw = std::max(1u, cw >> api_shift);
       rec->rh = std::max(1u, ch >> api_shift);
+      int max_fps = g_api_record_max_fps.load(std::memory_order_acquire);
+      if (max_fps > 0) rec->min_interval_us = 1000000ull / (uint64_t)max_fps;
       // Zero-copy when the shell armed it: build (or recycle) the dmabuf
       // ring now, with the GL context current. Failure sends the one-shot
       // sentinel so the shell swaps to its pipe encoder, and the session
@@ -1001,6 +1021,22 @@ static void RunCaptureHooks(FlDrmView* v, uint32_t width, uint32_t height) {
       }
       rec->last_epoch = epoch;
       rec->last_frame_us = now_us;
+    }
+
+    // Rate cap: a present inside the capture interval takes no slot, no
+    // blit, no flush — it costs one clock read. Applied to both sinks;
+    // the shell's own downstream cap stays as the safety net.
+    if (rec->min_interval_us != 0) {
+      struct timespec rc;
+      clock_gettime(CLOCK_MONOTONIC, &rc);
+      const uint64_t rc_us =
+          (uint64_t)rc.tv_sec * 1000000ull + rc.tv_nsec / 1000;
+      if (rec->last_cap_us != 0 &&
+          rc_us - rec->last_cap_us < rec->min_interval_us * 9 / 10) {
+        rec->rate_skipped++;
+        return;
+      }
+      rec->last_cap_us = rc_us;
     }
 
     // Zero-copy: claim a free ring slot before touching any GL — every
@@ -2792,6 +2828,10 @@ void fl_drm_view_set_record_dmabuf_callback(FlDrmView* view,
 
 void fl_drm_view_recording_set_dmabuf(int enable) {
   g_api_record_dmabuf.store(enable != 0, std::memory_order_release);
+}
+
+void fl_drm_view_recording_set_max_fps(int fps) {
+  g_api_record_max_fps.store(fps > 0 ? fps : 0, std::memory_order_release);
 }
 
 void fl_drm_view_recording_notify_source_changed(void) {

@@ -208,6 +208,15 @@ FL_DRM_EXPORT void fl_drm_view_set_record_dmabuf_callback(
     FlDrmRecordDmabufCallback callback,
     void* user_data);
 FL_DRM_EXPORT void fl_drm_view_recording_set_dmabuf(int enable);
+// Cap the CAPTURE rate, in frames/sec (0 = capture every present, the
+// default). Read when a start request is consumed; set it before
+// recording_start*. Without a cap the capture runs at the present rate —
+// on a 90Hz output that is three full blits for every frame a 30fps
+// encoder keeps, each of them in the present path — so a session that
+// encodes at N fps should set N here and let presents inside the interval
+// skip capture entirely. The consumer's own pacing still applies; this
+// only removes the work for frames nobody would keep.
+FL_DRM_EXPORT void fl_drm_view_recording_set_max_fps(int fps);
 FL_DRM_EXPORT void fl_drm_view_recording_release_dmabuf_slot(int slot);
 
 // App capture only: tell the recorder the RECORDED window just committed
