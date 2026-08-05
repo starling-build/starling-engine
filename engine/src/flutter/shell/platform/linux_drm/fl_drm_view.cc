@@ -95,6 +95,12 @@ static std::atomic<int64_t> g_api_record_texture{-1};
 // buffers) or bottom-up (first-party children render into GL FBOs) — the
 // blit flips the latter. The scene has the same split: flipTextureY.
 static std::atomic<bool> g_api_record_tex_topdown{false};
+// Where the recorded window's CONTENT sits on screen, CRTC px {x, y, w, h}
+// — the only thing that lets a window-space capture place a screen-space
+// pointer. w<=0 means unknown, and the cursor is then left out rather than
+// guessed at. The shell re-pushes it from the frame-tick pump, so a window
+// dragged or resized mid-recording keeps the pointer in the right place.
+static std::atomic<int> g_api_win_rect[4] = {0, 0, 0, 0};
 
 // Zero-copy sink (see fl_drm_view.h): armed per session by the shell,
 // consumed with the start request. The busy mask is the only recording state
@@ -1193,11 +1199,34 @@ static void RunCaptureHooks(FlDrmView* v, uint32_t width, uint32_t height) {
       cur.visible = false;
     }
     if (src_tex_id >= 0) {
-      // App capture is window-space; the cursor lives in screen-space.
-      cur.visible = false;
+      // App capture is window-space; the cursor lives in screen-space. Map
+      // it through the window's on-screen content rect, which the shell
+      // pushes per frame, and hide it while the pointer is elsewhere — the
+      // same rule Windows (WGC) and macOS (ScreenCaptureKit) apply to a
+      // window stream. Unknown rect means no cursor rather than a wrong one.
+      const int wx = g_api_win_rect[0].load(std::memory_order_relaxed);
+      const int wy = g_api_win_rect[1].load(std::memory_order_relaxed);
+      const int ww = g_api_win_rect[2].load(std::memory_order_relaxed);
+      const int wh = g_api_win_rect[3].load(std::memory_order_relaxed);
+      // Cursor coords are the shape's top-left (hot-spot already
+      // subtracted), so the 64px box intersecting the window is what counts
+      // — that is what keeps half a pointer visible at the window edge.
+      if (ww <= 0 || wh <= 0 || cur.x + 64 <= wx || cur.x >= wx + ww ||
+          cur.y + 64 <= wy || cur.y >= wy + wh) {
+        cur.visible = false;
+      } else {
+        // Into recording-source px. The blit scales the window texture into
+        // the frozen output, so scale the pointer the same way; on a 1:1
+        // window this is the subtraction alone.
+        const int src_w = (int)rw << rec->shift;
+        const int src_h = (int)rh << rec->shift;
+        cur.x = (int)(((int64_t)(cur.x - wx) * src_w) / ww);
+        cur.y = (int)(((int64_t)(cur.y - wy) * src_h) / wh);
+      }
+    } else {
+      cur.x -= sx;
+      cur.y -= sy;
     }
-    cur.x -= sx;
-    cur.y -= sy;
 
     if (zc) {
       // The frame is already in shareable memory — draw the cursor on the
@@ -2880,6 +2909,9 @@ void fl_drm_view_recording_start_texture(FlDrmView* view, int downscale_shift,
   g_api_record_tex_topdown.store(content_top_down != 0,
                                  std::memory_order_relaxed);
   g_api_record_texture.store(texture_id, std::memory_order_relaxed);
+  // Cleared, not carried: a rect left over from the previous session would
+  // put the pointer somewhere arbitrary until the shell's first push.
+  fl_drm_view_recording_set_window_rect(0, 0, 0, 0);
   // The crop dims freeze the output size (the source blit scales to fit);
   // origin is meaningless for a texture source.
   fl_drm_view_recording_set_crop(0, 0, w, h);
@@ -2894,6 +2926,13 @@ void fl_drm_view_recording_set_crop(int x, int y, int w, int h) {
   g_api_crop[1].store(y, std::memory_order_relaxed);
   g_api_crop[2].store(w, std::memory_order_relaxed);
   g_api_crop[3].store(h, std::memory_order_relaxed);
+}
+
+void fl_drm_view_recording_set_window_rect(int x, int y, int w, int h) {
+  g_api_win_rect[0].store(x, std::memory_order_relaxed);
+  g_api_win_rect[1].store(y, std::memory_order_relaxed);
+  g_api_win_rect[2].store(w, std::memory_order_relaxed);
+  g_api_win_rect[3].store(h, std::memory_order_relaxed);
 }
 
 void fl_drm_view_recording_stop(FlDrmView* view) {

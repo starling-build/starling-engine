@@ -148,15 +148,28 @@ FL_DRM_EXPORT void fl_drm_view_recording_set_crop(int x, int y,
 // instead of the framebuffer. Overlapping windows and position never show;
 // the resolve also refreshes dirty client textures, so content stays live
 // even minimized. |w|,|h| freeze the output size (the source scales to
-// fit). No cursor — the capture is window-space. A present where the
-// texture cannot be resolved delivers no frame. |content_top_down|: pass
-// the window's flipTextureY — Wayland client buffers are top-down (1),
-// first-party children render bottom-up into GL FBOs (0, blit flips).
+// fit). A present where the texture cannot be resolved delivers no frame.
+// |content_top_down|: pass the window's flipTextureY — Wayland client
+// buffers are top-down (1), first-party children render bottom-up into GL
+// FBOs (0, blit flips).
+//
+// The cursor is composited when the pointer is over the window, which needs
+// the window's on-screen rect — see set_window_rect. Starting a texture
+// session clears that rect, so push one after starting or the recording
+// has no pointer.
 FL_DRM_EXPORT void fl_drm_view_recording_start_texture(FlDrmView* view,
                                                        int downscale_shift,
                                                        int64_t texture_id,
                                                        int w, int h,
                                                        int content_top_down);
+// Where the recorded window's CONTENT (no title bar) currently sits on
+// screen, CRTC px. A window-space capture has no other way to place the
+// screen-space pointer, so this is what puts the cursor in an app
+// recording — and keeps it right as the window is dragged or resized.
+// Callable per frame from any thread; w<=0 means unknown, which leaves the
+// cursor out rather than drawing it somewhere wrong.
+FL_DRM_EXPORT void fl_drm_view_recording_set_window_rect(int x, int y,
+                                                         int w, int h);
 FL_DRM_EXPORT void fl_drm_view_recording_stop(FlDrmView* view);
 // Non-zero while a callback-sink recording session is live on the raster
 // thread (i.e. between the start request being consumed and the stop
