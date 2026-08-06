@@ -5,6 +5,8 @@
 #ifndef FLUTTER_SWIFT_IMMUTABLE_BUFFER_BRIDGE_H_
 #define FLUTTER_SWIFT_IMMUTABLE_BUFFER_BRIDGE_H_
 
+#include "swift_bridge_export.h"
+
 #include <swift/bridging>
 #include "intrusive_reference_counted.h"
 
@@ -43,7 +45,7 @@ struct ImmutableBufferBridgeImpl;
 /// Dart VM callbacks (_futurize pattern). The Swift bridge provides synchronous
 /// creation methods since Swift has its own async/await mechanism. The caller
 /// (Swift ImmutableBuffer) can wrap these in Swift async if needed.
-class __attribute__((visibility("default")))
+class FLUTTER_SWIFT_BRIDGE_EXPORT
     SWIFT_SHARED_REFERENCE(RetainImmutableBufferBridge,
                            ReleaseImmutableBufferBridge)
         ImmutableBufferBridge

@@ -5,6 +5,8 @@
 #ifndef FLUTTER_SWIFT_PARAGRAPH_BRIDGE_H_
 #define FLUTTER_SWIFT_PARAGRAPH_BRIDGE_H_
 
+#include "swift_bridge_export.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <swift/bridging>
@@ -50,7 +52,7 @@ class CanvasBridge;
 /// - Box queries: getBoxesForRange, getBoxesForPlaceholders
 /// - Line metrics: computeLineMetrics, getLineMetricsAt, numberOfLines
 /// - Glyph info: getGlyphInfoAt, getClosestGlyphInfoForOffset
-class __attribute__((visibility("default")))
+class FLUTTER_SWIFT_BRIDGE_EXPORT
     SWIFT_SHARED_REFERENCE(RetainParagraphBridge, ReleaseParagraphBridge)
         ParagraphBridge
     : public IntrusiveReferenceCounted<ParagraphBridge> {

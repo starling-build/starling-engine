@@ -154,6 +154,14 @@ class FlutterWindowsEngine {
   // Sets switches member to the given switches.
   void SetSwitches(const std::vector<std::string>& switches);
 
+  // Puts the engine in Swift mode: on Run() it is initialized with
+  // FlutterEngineInitializeSwift instead of running a Dart isolate, and the
+  // Swift framework drives frames through the callback table.
+  // |runtime_controller| is an opaque SwiftRuntimeCallbacks* that must outlive
+  // the engine. Call before Run(). Same contract as the GTK embedder's
+  // fl_engine_set_swift_runtime and the DRM embedder's runtime_controller.
+  void SetSwiftRuntime(const void* runtime_controller);
+
   FlutterDesktopMessengerRef messenger() { return messenger_->ToRef(); }
 
   IncomingMessageDispatcher* message_dispatcher() {
@@ -401,6 +409,11 @@ class FlutterWindowsEngine {
 
   // AOT data, if any.
   UniqueAotDataPtr aot_data_;
+
+  // When set, the engine starts in Swift mode (FlutterEngineInitializeSwift,
+  // no Dart isolate) with this SwiftRuntimeCallbacks table driving frames.
+  // Owned by the caller of SetSwiftRuntime; must outlive the engine.
+  const void* swift_runtime_controller_ = nullptr;
 
   // The ID that the next view will have.
   FlutterViewId next_view_id_ = kImplicitViewId;

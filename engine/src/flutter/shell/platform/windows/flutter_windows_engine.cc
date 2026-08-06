@@ -33,6 +33,23 @@
 // winbase.h defines GetCurrentTime as a macro.
 #undef GetCurrentTime
 
+// This target defines FLUTTER_ENGINE_NO_PROTOTYPES and reaches the embedder
+// API through the proc table. The Swift entry points are this fork's addition
+// and not part of that fixed upstream table, so declare them directly — they
+// resolve against flutter_engine.dll, which this library links (see BUILD.gn).
+// Mirrors the same block in fl_engine.cc.
+extern "C" {
+FlutterEngineResult FlutterEngineInitializeSwift(
+    size_t version,
+    const FlutterRendererConfig* config,
+    const FlutterProjectArgs* args,
+    void* user_data,
+    FlutterRuntimeController runtime_controller,
+    FLUTTER_API_SYMBOL(FlutterEngine) * engine_out);
+FlutterEngineResult FlutterEngineRunInitializedSwift(
+    FLUTTER_API_SYMBOL(FlutterEngine) engine);
+}
+
 static constexpr char kAccessibilityChannelName[] = "flutter/accessibility";
 
 namespace flutter {
@@ -265,6 +282,11 @@ void FlutterWindowsEngine::SetSwitches(
   project_->SetSwitches(switches);
 }
 
+void FlutterWindowsEngine::SetSwiftRuntime(const void* runtime_controller) {
+  FML_DCHECK(engine_ == nullptr);  // must precede Run()
+  swift_runtime_controller_ = runtime_controller;
+}
+
 bool FlutterWindowsEngine::Run() {
   return Run("");
 }
@@ -276,7 +298,9 @@ bool FlutterWindowsEngine::Run(std::string_view entrypoint) {
   }
   std::string assets_path_string = fml::PathToUtf8(project_->assets_path());
   std::string icu_path_string = fml::PathToUtf8(project_->icu_path());
-  if (embedder_api_.RunsAOTCompiledDartCode()) {
+  // Swift mode runs no Dart isolate, so AOT data is meaningless there.
+  if (swift_runtime_controller_ == nullptr &&
+      embedder_api_.RunsAOTCompiledDartCode()) {
     aot_data_ = project_->LoadAotData(embedder_api_);
     if (!aot_data_) {
       FML_LOG(ERROR) << "Unable to start engine without AOT data.";
@@ -290,6 +314,11 @@ bool FlutterWindowsEngine::Run(std::string_view entrypoint) {
   std::string executable_name = GetExecutableName();
   std::vector<const char*> argv = {executable_name.c_str()};
   std::vector<std::string> switches = project_->GetSwitches();
+  if (swift_runtime_controller_ != nullptr) {
+    // The Swift runtime renders through Skia; every Swift host passes this
+    // (see fl_engine.cc and fl_drm_view.cc). Impeller aborts under it.
+    switches.push_back("--enable-impeller=false");
+  }
   std::transform(
       switches.begin(), switches.end(), std::back_inserter(argv),
       [](const std::string& arg) -> const char* { return arg.c_str(); });
@@ -490,8 +519,23 @@ bool FlutterWindowsEngine::Run(std::string_view entrypoint) {
         egl_manager_ ? GetOpenGLRendererConfig() : GetSoftwareRendererConfig();
   }
 
-  auto result = embedder_api_.Run(FLUTTER_ENGINE_VERSION, &renderer_config,
-                                  &args, this, &engine_);
+  // Direct calls for the Swift variants, not the proc table: the table is a
+  // fixed upstream struct and these entry points are this fork's addition.
+  // Upstream's one-shot Run() has no Swift counterpart, so Swift mode uses the
+  // Initialize + RunInitialized pair the generic embedder exposes.
+  FlutterEngineResult result;
+  if (swift_runtime_controller_ != nullptr) {
+    result = FlutterEngineInitializeSwift(
+        FLUTTER_ENGINE_VERSION, &renderer_config, &args, this,
+        static_cast<FlutterRuntimeController>(swift_runtime_controller_),
+        &engine_);
+    if (result == kSuccess && engine_ != nullptr) {
+      result = FlutterEngineRunInitializedSwift(engine_);
+    }
+  } else {
+    result = embedder_api_.Run(FLUTTER_ENGINE_VERSION, &renderer_config, &args,
+                               this, &engine_);
+  }
   if (result != kSuccess || engine_ == nullptr) {
     FML_LOG(ERROR) << "Failed to start Flutter engine: error " << result;
     return false;

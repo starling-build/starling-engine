@@ -5,6 +5,8 @@
 #ifndef FLUTTER_SWIFT_PLATFORM_DISPATCHER_BRIDGE_H_
 #define FLUTTER_SWIFT_PLATFORM_DISPATCHER_BRIDGE_H_
 
+#include "swift_bridge_export.h"
+
 #include <swift/bridging>
 #include "intrusive_reference_counted.h"
 
@@ -35,7 +37,7 @@ struct PlatformDispatcherImpl;
 /// DIFFERENCE FROM DART: The Dart version uses PlatformConfigurationNativeApi
 /// which depends on UIDartState (Dart VM). The Swift bridge connects to the
 /// engine via SwiftBridgeEngineRegistry callbacks set during shell startup.
-class __attribute__((visibility("default")))
+class FLUTTER_SWIFT_BRIDGE_EXPORT
     SWIFT_SHARED_REFERENCE(RetainPlatformDispatcherBridge,
                            ReleasePlatformDispatcherBridge)
         PlatformDispatcherBridge

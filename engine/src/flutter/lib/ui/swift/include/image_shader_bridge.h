@@ -5,6 +5,8 @@
 #ifndef FLUTTER_SWIFT_IMAGE_SHADER_BRIDGE_H_
 #define FLUTTER_SWIFT_IMAGE_SHADER_BRIDGE_H_
 
+#include "swift_bridge_export.h"
+
 #include <swift/bridging>
 #include "intrusive_reference_counted.h"
 
@@ -40,7 +42,7 @@ class ImageBridge;
 /// - ImageShaderBridge holds DlColorSource (DlImageColorSource) via pimpl
 /// - Swift ARC handles lifetime via SWIFT_SHARED_REFERENCE
 /// - The ImageBridge (from Image) provides the underlying DlImage
-class __attribute__((visibility("default")))
+class FLUTTER_SWIFT_BRIDGE_EXPORT
     SWIFT_SHARED_REFERENCE(RetainImageShaderBridge, ReleaseImageShaderBridge)
         ImageShaderBridge
     : public IntrusiveReferenceCounted<ImageShaderBridge> {

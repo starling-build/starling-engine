@@ -171,7 +171,15 @@ source_set("flutter_windows_source") {
     "//flutter/shell/platform/common:common_cpp_isolate_scope",
     "//flutter/shell/platform/common:common_cpp_switches",
     "//flutter/shell/platform/common/client_wrapper",
-    "//flutter/shell/platform/embedder:embedder_as_internal_library",
+
+    # Headers only — the embedder itself comes from flutter_engine.dll (see the
+    # libs on :flutter_windows). Upstream compiles the embedder into this
+    # library (embedder_as_internal_library); this fork must not, because a
+    # Swift app has FlutterSwiftBridge bound to flutter_engine.dll — an
+    # internal second engine copy would give the process two Skias and a bridge
+    # pointing at the one that isn't running. Same arrangement as the fork's
+    # shell/platform/linux change.
+    "//flutter/shell/platform/embedder:embedder_headers",
     "//flutter/shell/platform/windows/client_wrapper:client_wrapper_windows",
 
     # libEGL_static MUST be ordered before libGLESv2_static in this list. If
@@ -192,7 +200,18 @@ copy("publish_headers_windows") {
 }
 
 shared_library("flutter_windows") {
-  deps = [ ":flutter_windows_source" ]
+  deps = [
+    ":flutter_windows_source",
+    "//flutter/shell/platform/embedder:flutter_engine",
+  ]
+
+  # Embedder API symbols (FlutterEngineGetProcAddresses, the Swift entry
+  # points, …) resolve against flutter_engine.dll — one engine per process,
+  # shared with FlutterSwiftBridge. Mirrors the ldflags the fork puts on
+  # :flutter_linux_gtk; on Windows that binding is the DLL's import library,
+  # which GN names after the DLL.
+  libs = [ "flutter_engine.dll.lib" ]
+  lib_dirs = [ root_out_dir ]
 
   public_configs = [ "//flutter:config" ]
 }

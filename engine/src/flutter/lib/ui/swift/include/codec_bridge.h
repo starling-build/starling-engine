@@ -5,6 +5,8 @@
 #ifndef FLUTTER_SWIFT_CODEC_BRIDGE_H_
 #define FLUTTER_SWIFT_CODEC_BRIDGE_H_
 
+#include "swift_bridge_export.h"
+
 #include <swift/bridging>
 #include "intrusive_reference_counted.h"
 #include "image_bridge.h"
@@ -46,7 +48,7 @@ struct CodecBridgeImpl;
 /// for task runner access, which is Dart VM specific.
 /// REASON: Swift doesn't use Dart VM; a future engine integration layer
 /// will provide proper async decoding with GPU upload support.
-class __attribute__((visibility("default")))
+class FLUTTER_SWIFT_BRIDGE_EXPORT
     SWIFT_SHARED_REFERENCE(RetainCodecBridge, ReleaseCodecBridge)
         CodecBridge
     : public IntrusiveReferenceCounted<CodecBridge> {

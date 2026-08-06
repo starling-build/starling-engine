@@ -5,6 +5,8 @@
 #ifndef FLUTTER_SWIFT_FRAGMENT_PROGRAM_BRIDGE_H_
 #define FLUTTER_SWIFT_FRAGMENT_PROGRAM_BRIDGE_H_
 
+#include "swift_bridge_export.h"
+
 #include <swift/bridging>
 #include "intrusive_reference_counted.h"
 
@@ -48,7 +50,7 @@ struct FragmentProgramImpl;
 /// bridge, we take the raw asset data and backend type as parameters to avoid
 /// depending on //flutter/lib/ui (the Dart UI layer being replaced).
 /// REASON: The bridge must not depend on Dart VM infrastructure.
-class __attribute__((visibility("default")))
+class FLUTTER_SWIFT_BRIDGE_EXPORT
     SWIFT_SHARED_REFERENCE(RetainFragmentProgramBridge,
                            ReleaseFragmentProgramBridge)
         FragmentProgramBridge

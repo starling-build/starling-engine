@@ -5,6 +5,8 @@
 #ifndef FLUTTER_SWIFT_IMAGE_DESCRIPTOR_BRIDGE_H_
 #define FLUTTER_SWIFT_IMAGE_DESCRIPTOR_BRIDGE_H_
 
+#include "swift_bridge_export.h"
+
 #include <swift/bridging>
 #include "intrusive_reference_counted.h"
 #include "immutable_buffer_bridge.h"
@@ -51,7 +53,7 @@ struct ImageDescriptorBridgeImpl;
 /// the buffer data and creates a compatible generator directly using the
 /// default built-in Skia decoders.
 /// REASON: Swift doesn't use Dart VM; UIDartState is not available.
-class __attribute__((visibility("default")))
+class FLUTTER_SWIFT_BRIDGE_EXPORT
     SWIFT_SHARED_REFERENCE(RetainImageDescriptorBridge,
                            ReleaseImageDescriptorBridge)
         ImageDescriptorBridge

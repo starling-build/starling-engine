@@ -53,6 +53,13 @@ if (_swift_include_override != "") {
     _swift_toolchain_include =
         getenv("HOME") +
         "/Library/Developer/Toolchains/swift-6.2.1-RELEASE.xctoolchain/usr/include"
+  } else if (is_win) {
+    # swift.org's Windows installer is per-user, under %LOCALAPPDATA%; there is
+    # no system-wide location to fall back on. A toolchain placed anywhere else
+    # (or a different version) must set STARLING_SWIFT_TOOLCHAIN.
+    _swift_toolchain_include =
+        getenv("LOCALAPPDATA") +
+        "/Programs/Swift/Toolchains/6.2.3+Asserts/usr/include"
   } else {
     _swift_toolchain_include =
         getenv("HOME") + "/.local/share/swiftly/toolchains/6.2.4/usr/include"
@@ -62,6 +69,10 @@ if (_swift_include_override != "") {
 config("swift_bridge_config") {
   include_dirs = [ "." ]
 
+  # Every target that compiles these headers is part of the engine side, so it
+  # is the one that exports. See swift_bridge_export.h.
+  defines = [ "FLUTTER_SWIFT_BRIDGE_IMPLEMENTATION" ]
+
   # Visibility annotations for shared library exports
   if (is_mac || is_ios || is_linux) {
     cflags = [
@@ -70,6 +81,18 @@ config("swift_bridge_config") {
       "-isystem",
       _swift_toolchain_include,
     ]
+  } else if (is_win) {
+    # clang-cl spells the system-include flag /imsvc, and takes it joined
+    # rather than as a separate argument. -fvisibility has no meaning here:
+    # what a DLL exports comes from the dllexport in swift_bridge_export.h.
+    cflags = [ "/imsvc" + _swift_toolchain_include ]
+
+    # The bridge converts radians to degrees with M_PI in three files
+    # (gradient, path, canvas). glibc and libc++ hand those constants out
+    # unconditionally; the UCRT only defines them when this is set before
+    # <math.h> is first reached, so it has to come from the command line
+    # rather than a #define in any one source file.
+    defines += [ "_USE_MATH_DEFINES" ]
   }
 }
 
@@ -85,7 +108,10 @@ source_set("intrusive_reference_counted") {
 # Used by the swift_bridge shared library to include the header without
 # linking the implementation (which lives in the executable).
 source_set("swift_bridge_engine_registry_headers") {
-  sources = [ "include/swift_bridge_engine_registry.h" ]
+  sources = [
+    "include/swift_bridge_engine_registry.h",
+    "include/swift_bridge_export.h",
+  ]
 
   public_configs = [
     ":swift_bridge_config",
@@ -100,6 +126,7 @@ source_set("swift_bridge_engine_registry_headers") {
 source_set("swift_bridge_engine_registry") {
   sources = [
     "include/swift_bridge_engine_registry.h",
+    "include/swift_bridge_export.h",
     "src/swift_bridge_engine_registry.cc",
   ]
 
@@ -140,6 +167,7 @@ shared_library("swift_bridge") {
   sources = [
     # Bridge headers (Swift-compatible, no Flutter includes)
     "include/intrusive_reference_counted.h",
+    "include/swift_bridge_export.h",
     "include/rsuperellipse_bridge.h",
     "include/channel_buffers_bridge.h",
     "include/shader_bridge.h",
@@ -256,6 +284,7 @@ source_set("swift_bridge_sources") {
   sources = [
     # Bridge headers
     "include/intrusive_reference_counted.h",
+    "include/swift_bridge_export.h",
     "include/rsuperellipse_bridge.h",
     "include/channel_buffers_bridge.h",
     "include/shader_bridge.h",

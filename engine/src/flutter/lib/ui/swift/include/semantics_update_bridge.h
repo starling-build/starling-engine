@@ -5,6 +5,8 @@
 #ifndef FLUTTER_SWIFT_SEMANTICS_UPDATE_BRIDGE_H_
 #define FLUTTER_SWIFT_SEMANTICS_UPDATE_BRIDGE_H_
 
+#include "swift_bridge_export.h"
+
 #include <swift/bridging>
 #include "intrusive_reference_counted.h"
 
@@ -40,7 +42,7 @@ struct SemanticsUpdateImpl;
 /// - SemanticsUpdateBridge holds SemanticsNodeUpdates and
 ///   CustomAccessibilityActionUpdates via pimpl
 /// - Swift ARC handles lifetime via SWIFT_SHARED_REFERENCE
-class __attribute__((visibility("default")))
+class FLUTTER_SWIFT_BRIDGE_EXPORT
     SWIFT_SHARED_REFERENCE(RetainSemanticsUpdateBridge,
                            ReleaseSemanticsUpdateBridge)
         SemanticsUpdateBridge

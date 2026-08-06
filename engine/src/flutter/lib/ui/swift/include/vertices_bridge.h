@@ -5,6 +5,8 @@
 #ifndef FLUTTER_SWIFT_VERTICES_BRIDGE_H_
 #define FLUTTER_SWIFT_VERTICES_BRIDGE_H_
 
+#include "swift_bridge_export.h"
+
 #include <cstdint>
 #include <swift/bridging>
 #include "intrusive_reference_counted.h"
@@ -37,7 +39,7 @@ struct VerticesBridgeImpl;
 /// - Swift Vertices class wraps VerticesBridge
 /// - VerticesBridge wraps the underlying DlVertices
 /// - Swift ARC handles lifetime via SWIFT_SHARED_REFERENCE
-class __attribute__((visibility("default")))
+class FLUTTER_SWIFT_BRIDGE_EXPORT
     SWIFT_SHARED_REFERENCE(RetainVerticesBridge, ReleaseVerticesBridge)
         VerticesBridge
     : public IntrusiveReferenceCounted<VerticesBridge> {

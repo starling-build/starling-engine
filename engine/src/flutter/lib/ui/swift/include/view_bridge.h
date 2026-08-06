@@ -7,6 +7,8 @@
 
 #include <cstdint>
 
+#include "swift_bridge_export.h"
+
 // Forward declarations - avoid including Flutter engine headers
 namespace flutter::swift_bridge {
 
@@ -40,10 +42,10 @@ class SemanticsUpdateBridge;
 /// @param scene_bridge The SceneBridge wrapping the scene to render.
 /// @param width The width of the render target in physical pixels.
 /// @param height The height of the render target in physical pixels.
-void RenderView(int64_t view_id,
-                SceneBridge* scene_bridge,
-                double width,
-                double height);
+FLUTTER_SWIFT_BRIDGE_EXPORT void RenderView(int64_t view_id,
+                                            SceneBridge* scene_bridge,
+                                            double width,
+                                            double height);
 
 /// Updates semantics data for a view.
 ///
@@ -67,8 +69,9 @@ void RenderView(int64_t view_id,
 ///
 /// @param view_id The ID of the view to update semantics for.
 /// @param update_bridge The SemanticsUpdateBridge containing the semantics data.
-void UpdateViewSemantics(int64_t view_id,
-                         SemanticsUpdateBridge* update_bridge);
+FLUTTER_SWIFT_BRIDGE_EXPORT void UpdateViewSemantics(
+    int64_t view_id,
+    SemanticsUpdateBridge* update_bridge);
 
 }  // namespace flutter::swift_bridge
 

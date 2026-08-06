@@ -222,6 +222,11 @@ void FlutterDesktopEngineReloadSystemFonts(FlutterDesktopEngineRef engine) {
   EngineFromHandle(engine)->ReloadSystemFonts();
 }
 
+void FlutterDesktopEngineSetSwiftRuntime(FlutterDesktopEngineRef engine,
+                                         const void* runtime_controller) {
+  EngineFromHandle(engine)->SetSwiftRuntime(runtime_controller);
+}
+
 FlutterDesktopPluginRegistrarRef FlutterDesktopEngineGetPluginRegistrar(
     FlutterDesktopEngineRef engine,
     const char* plugin_name) {

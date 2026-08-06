@@ -5,6 +5,8 @@
 #ifndef FLUTTER_SWIFT_CANVAS_BRIDGE_H_
 #define FLUTTER_SWIFT_CANVAS_BRIDGE_H_
 
+#include "swift_bridge_export.h"
+
 #include <string>
 #include <swift/bridging>
 #include "intrusive_reference_counted.h"
@@ -48,7 +50,7 @@ class ImageFilterBridge;
 /// - Swift ARC handles lifetime via SWIFT_SHARED_REFERENCE
 /// - Paint data is passed as raw bytes (68-byte buffer matching paint.cc format)
 ///   plus optional shader/colorFilter/imageFilter bridge pointers
-class __attribute__((visibility("default")))
+class FLUTTER_SWIFT_BRIDGE_EXPORT
     SWIFT_SHARED_REFERENCE(RetainCanvasBridge, ReleaseCanvasBridge)
         CanvasBridge
     : public IntrusiveReferenceCounted<CanvasBridge> {

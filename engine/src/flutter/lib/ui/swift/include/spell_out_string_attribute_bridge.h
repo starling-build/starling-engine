@@ -5,6 +5,8 @@
 #ifndef FLUTTER_SWIFT_SPELL_OUT_STRING_ATTRIBUTE_BRIDGE_H_
 #define FLUTTER_SWIFT_SPELL_OUT_STRING_ATTRIBUTE_BRIDGE_H_
 
+#include "swift_bridge_export.h"
+
 #include <swift/bridging>
 #include "intrusive_reference_counted.h"
 
@@ -35,7 +37,7 @@ struct SpellOutStringAttributeImpl;
 ///
 /// Stores a spell-out string attribute with start/end range.
 /// Maps to NativeStringAttribute::initSpellOutStringAttribute in the engine.
-class __attribute__((visibility("default")))
+class FLUTTER_SWIFT_BRIDGE_EXPORT
     SWIFT_SHARED_REFERENCE(RetainSpellOutStringAttributeBridge,
                            ReleaseSpellOutStringAttributeBridge)
         SpellOutStringAttributeBridge

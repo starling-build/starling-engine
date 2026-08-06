@@ -97,6 +97,20 @@ template("embedder_source_set") {
       "vsync_waiter_embedder.h",
     ]
 
+    if (is_win && target_name == "embedder") {
+      # embedder.h leaves FLUTTER_EXPORT empty unless the build fills it in, and
+      # on Windows nothing leaves a DLL without it — an unannotated
+      # flutter_engine.dll exports zero symbols and every consumer fails to
+      # link. Only the engine side needs this: consumers leave FLUTTER_EXPORT
+      # empty and reach the API through the import library's thunks, so the
+      # header stays correct for them either way.
+      #
+      # Scoped to :embedder deliberately. The :embedder_as_internal_library
+      # variant exists to be compiled *into* an embedding without exposing the
+      # API surface (FLUTTER_NO_EXPORT), and must keep exporting nothing.
+      defines = [ "FLUTTER_EXPORT=__declspec(dllexport)" ]
+    }
+
     public_deps = [ ":embedder_headers" ]
     deps = [
       ":embedder_gpu_configuration",
@@ -208,9 +222,26 @@ embedder_source_set("embedder_as_internal_library") {
 }
 
 source_set("embedder_headers") {
-  public = [ "embedder.h" ]
+  # embedder_struct_macros.h is pure macros over embedder.h's structs, with no
+  # implementation behind it. It sat in embedder_as_internal_library, which
+  # meant a platform embedder that only wanted the API's types had to take a
+  # whole private copy of the engine to reach SAFE_ACCESS. Listing it here lets
+  # a headers-only consumer include it — see the note on
+  # common_cpp_accessibility in shell/platform/common/BUILD.gn for why that
+  # matters on Windows.
+  public = [
+    "embedder.h",
+    "embedder_struct_macros.h",
+  ]
 
-  public_configs = [ "//flutter:config" ]
+  # embedder_header_config is what puts this directory on the include path, so
+  # the unqualified `#include "embedder.h"` the platform embedders use resolves.
+  # It came with embedder_as_internal_library before; a headers-only consumer
+  # needs it just as much.
+  public_configs = [
+    ":embedder_header_config",
+    "//flutter:config",
+  ]
 }
 
 source_set("embedder_test_utils") {
@@ -455,6 +486,21 @@ shared_library("flutter_engine_library") {
   }
   if (is_linux) {
     ldflags += [ "-Wl,--version-script=" + rebase_path("embedder_exports.lst") ]
+  }
+
+  if (is_win) {
+    # The platform embedders' isolate_scope helper calls these three Dart API
+    # entry points. Upstream resolves them inside the private engine copy that
+    # embedder_as_internal_library drags into each platform library; with that
+    # copy removed on Windows (see shell/platform/common/BUILD.gn) they have to
+    # come from the one engine in the process — and a Windows DLL exports
+    # nothing it is not explicitly told to. The Linux version script needs no
+    # equivalent entry because there the internal copy still supplies them.
+    ldflags += [
+      "/EXPORT:Dart_CurrentIsolate",
+      "/EXPORT:Dart_EnterIsolate",
+      "/EXPORT:Dart_ExitIsolate",
+    ]
   }
 
   deps = [

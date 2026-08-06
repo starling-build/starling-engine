@@ -7,6 +7,7 @@
 #include "include/swift_bridge_engine_registry.h"
 
 // Flutter engine headers (only in .cc file)
+#include "flutter/fml/logging.h"
 #include "flutter/txt/src/txt/font_collection.h"
 #include "flutter/txt/src/txt/font_style.h"
 #include "flutter/txt/src/txt/font_weight.h"
@@ -390,8 +391,19 @@ ParagraphBuilderBridge::ParagraphBuilderBridge(
   if (font_collection) {
     auto builder = txt::ParagraphBuilder::CreateSkiaBuilder(
         style, font_collection, /*impeller_enabled=*/false);
+    if (!builder) {
+      FML_LOG(ERROR) << "ParagraphBuilderBridge: CreateSkiaBuilder returned "
+                        "null; text will not lay out.";
+    }
     impl_ = new ParagraphBuilderImpl(std::move(builder));
   } else {
+    // Worth saying out loud: without it the only symptom is AddTextSafe
+    // returning false, which the Swift side reports as "Invalid text provided
+    // to addText" — pointing at the text rather than at engine startup, which
+    // is where the fault actually is.
+    FML_LOG(ERROR) << "ParagraphBuilderBridge: no font collection registered; "
+                      "shell startup did not reach "
+                      "SwiftBridgeEngineRegistry::SetFontCollection.";
     impl_ = new ParagraphBuilderImpl(nullptr);
   }
 }

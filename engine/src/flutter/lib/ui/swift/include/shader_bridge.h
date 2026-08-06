@@ -5,6 +5,8 @@
 #ifndef FLUTTER_SWIFT_SHADER_BRIDGE_H_
 #define FLUTTER_SWIFT_SHADER_BRIDGE_H_
 
+#include "swift_bridge_export.h"
+
 #include <swift/bridging>
 #include "intrusive_reference_counted.h"
 
@@ -35,7 +37,7 @@ namespace flutter::swift_bridge {
 /// - Swift ARC handles lifetime via SWIFT_SHARED_REFERENCE
 /// - Dispose() marks the shader as disposed (debug tracking only in Dart)
 /// - Actual shader resources are held by subclasses
-class __attribute__((visibility("default")))
+class FLUTTER_SWIFT_BRIDGE_EXPORT
     SWIFT_SHARED_REFERENCE(RetainShaderBridge, ReleaseShaderBridge)
         ShaderBridge
     : public IntrusiveReferenceCounted<ShaderBridge> {

@@ -5,6 +5,8 @@
 #ifndef FLUTTER_SWIFT_BRIDGE_ENGINE_REGISTRY_H_
 #define FLUTTER_SWIFT_BRIDGE_ENGINE_REGISTRY_H_
 
+#include "swift_bridge_export.h"
+
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -39,7 +41,7 @@ namespace flutter::swift_bridge {
 /// can replace this later. The callback-based approach avoids requiring the
 /// bridge shared_library to depend on //flutter/runtime (which transitively
 /// depends on //flutter/lib/ui and Dart VM).
-class __attribute__((visibility("default"))) SwiftBridgeEngineRegistry {
+class FLUTTER_SWIFT_BRIDGE_EXPORT SwiftBridgeEngineRegistry {
  public:
   /// Callback type for RuntimeDelegate::Render().
   ///

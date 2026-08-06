@@ -5,6 +5,8 @@
 #ifndef FLUTTER_SWIFT_PARAGRAPH_BUILDER_BRIDGE_H_
 #define FLUTTER_SWIFT_PARAGRAPH_BUILDER_BRIDGE_H_
 
+#include "swift_bridge_export.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <swift/bridging>
@@ -53,7 +55,7 @@ class ParagraphBridge;
 ///   from text.dart)
 /// - This allows Swift to pass structured data which the C++ bridge decodes
 /// - All encoding constants match those in paragraph_builder.cc
-class __attribute__((visibility("default"))) SWIFT_SHARED_REFERENCE(
+class FLUTTER_SWIFT_BRIDGE_EXPORT SWIFT_SHARED_REFERENCE(
     RetainParagraphBuilderBridge,
     ReleaseParagraphBuilderBridge) ParagraphBuilderBridge
     : public IntrusiveReferenceCounted<ParagraphBuilderBridge> {

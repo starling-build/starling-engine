@@ -5,6 +5,8 @@
 #ifndef FLUTTER_SWIFT_COLOR_FILTER_BRIDGE_H_
 #define FLUTTER_SWIFT_COLOR_FILTER_BRIDGE_H_
 
+#include "swift_bridge_export.h"
+
 #include <swift/bridging>
 #include "intrusive_reference_counted.h"
 
@@ -42,7 +44,7 @@ struct ColorFilterImpl;
 /// - Swift _NativeColorFilter class wraps ColorFilterBridge
 /// - ColorFilterBridge holds DlColorFilter via pimpl pattern
 /// - Swift ARC handles lifetime via SWIFT_SHARED_REFERENCE
-class __attribute__((visibility("default")))
+class FLUTTER_SWIFT_BRIDGE_EXPORT
     SWIFT_SHARED_REFERENCE(RetainColorFilterBridge, ReleaseColorFilterBridge)
         ColorFilterBridge
     : public IntrusiveReferenceCounted<ColorFilterBridge> {

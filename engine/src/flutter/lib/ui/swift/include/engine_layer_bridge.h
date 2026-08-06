@@ -5,6 +5,8 @@
 #ifndef FLUTTER_SWIFT_ENGINE_LAYER_BRIDGE_H_
 #define FLUTTER_SWIFT_ENGINE_LAYER_BRIDGE_H_
 
+#include "swift_bridge_export.h"
+
 #include <swift/bridging>
 #include "intrusive_reference_counted.h"
 
@@ -39,7 +41,7 @@ struct EngineLayerImpl;
 /// - EngineLayerBridge holds std::shared_ptr<ContainerLayer> via pimpl pattern
 /// - Swift ARC handles lifetime via SWIFT_SHARED_REFERENCE
 /// - Created by SceneBuilder push methods (future compositing migration)
-class __attribute__((visibility("default")))
+class FLUTTER_SWIFT_BRIDGE_EXPORT
     SWIFT_SHARED_REFERENCE(RetainEngineLayerBridge, ReleaseEngineLayerBridge)
         EngineLayerBridge
     : public IntrusiveReferenceCounted<EngineLayerBridge> {

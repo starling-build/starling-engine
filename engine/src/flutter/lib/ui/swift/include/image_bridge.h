@@ -5,6 +5,8 @@
 #ifndef FLUTTER_SWIFT_IMAGE_BRIDGE_H_
 #define FLUTTER_SWIFT_IMAGE_BRIDGE_H_
 
+#include "swift_bridge_export.h"
+
 #include <swift/bridging>
 #include "intrusive_reference_counted.h"
 
@@ -39,7 +41,7 @@ struct ImageBridgeImpl;
 /// - ImageBridge wraps the underlying DlImage (display list image)
 /// - Swift ARC handles lifetime via SWIFT_SHARED_REFERENCE
 /// - Multiple Swift Image handles can share the same ImageBridge
-class __attribute__((visibility("default")))
+class FLUTTER_SWIFT_BRIDGE_EXPORT
     SWIFT_SHARED_REFERENCE(RetainImageBridge, ReleaseImageBridge)
         ImageBridge
     : public IntrusiveReferenceCounted<ImageBridge> {

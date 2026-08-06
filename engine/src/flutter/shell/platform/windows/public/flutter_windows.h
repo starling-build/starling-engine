@@ -206,6 +206,18 @@ FlutterDesktopEngineProcessMessages(FlutterDesktopEngineRef engine);
 FLUTTER_EXPORT void FlutterDesktopEngineReloadSystemFonts(
     FlutterDesktopEngineRef engine);
 
+// Puts the engine in Swift mode: on run it is initialized with
+// FlutterEngineInitializeSwift instead of running a Dart isolate, and the Swift
+// framework drives frames through |runtime_controller|, an opaque
+// SwiftRuntimeCallbacks* that must outlive the engine.
+//
+// Must be called before the engine runs — that is, before
+// FlutterDesktopEngineRun or FlutterDesktopViewControllerCreate, whichever
+// starts it. Same contract as the GTK embedder's fl_engine_set_swift_runtime.
+FLUTTER_EXPORT void FlutterDesktopEngineSetSwiftRuntime(
+    FlutterDesktopEngineRef engine,
+    const void* runtime_controller);
+
 // Returns the plugin registrar handle for the plugin with the given name.
 //
 // The name must be unique across the application.

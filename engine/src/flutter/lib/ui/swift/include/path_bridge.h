@@ -5,6 +5,8 @@
 #ifndef FLUTTER_SWIFT_PATH_BRIDGE_H_
 #define FLUTTER_SWIFT_PATH_BRIDGE_H_
 
+#include "swift_bridge_export.h"
+
 #include <swift/bridging>
 #include "intrusive_reference_counted.h"
 
@@ -36,7 +38,7 @@ struct PathImpl;
 /// - Swift Path class wraps PathBridge
 /// - PathBridge holds SkPath via pimpl pattern
 /// - Swift ARC handles lifetime via SWIFT_SHARED_REFERENCE
-class __attribute__((visibility("default")))
+class FLUTTER_SWIFT_BRIDGE_EXPORT
     SWIFT_SHARED_REFERENCE(RetainPathBridge, ReleasePathBridge)
         PathBridge
     : public IntrusiveReferenceCounted<PathBridge> {

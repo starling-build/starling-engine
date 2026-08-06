@@ -5,6 +5,8 @@
 #ifndef FLUTTER_SWIFT_CHANNEL_BUFFERS_BRIDGE_H_
 #define FLUTTER_SWIFT_CHANNEL_BUFFERS_BRIDGE_H_
 
+#include "swift_bridge_export.h"
+
 #include <swift/bridging>
 
 namespace flutter::swift_bridge {
@@ -31,7 +33,7 @@ using SendChannelUpdateCallback = void (*)(const char* name, bool listening);
 /// - Swift calls `ChannelBuffersBridge::SendChannelUpdate()`
 /// - Bridge calls the registered callback
 /// - Callback implementation (in engine) calls the appropriate RuntimeDelegate method
-class __attribute__((visibility("default"))) ChannelBuffersBridge {
+class FLUTTER_SWIFT_BRIDGE_EXPORT ChannelBuffersBridge {
  public:
   /// Register a callback to be called when Swift code sends a channel update.
   ///

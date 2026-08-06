@@ -5,6 +5,8 @@
 #ifndef FLUTTER_SWIFT_PICTURE_BRIDGE_H_
 #define FLUTTER_SWIFT_PICTURE_BRIDGE_H_
 
+#include "swift_bridge_export.h"
+
 #include <swift/bridging>
 #include "intrusive_reference_counted.h"
 
@@ -41,7 +43,7 @@ class ImageBridge;
 /// - Swift ARC handles lifetime via SWIFT_SHARED_REFERENCE
 /// - Created by NativePictureRecorder.endRecording() which builds the
 ///   DisplayList from the CanvasBridge's DisplayListBuilder
-class __attribute__((visibility("default")))
+class FLUTTER_SWIFT_BRIDGE_EXPORT
     SWIFT_SHARED_REFERENCE(RetainPictureBridge, ReleasePictureBridge)
         PictureBridge
     : public IntrusiveReferenceCounted<PictureBridge> {

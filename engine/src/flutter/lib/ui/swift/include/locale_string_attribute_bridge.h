@@ -5,6 +5,8 @@
 #ifndef FLUTTER_SWIFT_LOCALE_STRING_ATTRIBUTE_BRIDGE_H_
 #define FLUTTER_SWIFT_LOCALE_STRING_ATTRIBUTE_BRIDGE_H_
 
+#include "swift_bridge_export.h"
+
 #include <swift/bridging>
 #include "intrusive_reference_counted.h"
 
@@ -35,7 +37,7 @@ struct LocaleStringAttributeImpl;
 ///
 /// Stores a locale string attribute with start/end range and locale tag.
 /// Maps to NativeStringAttribute::initLocaleStringAttribute in the engine.
-class __attribute__((visibility("default")))
+class FLUTTER_SWIFT_BRIDGE_EXPORT
     SWIFT_SHARED_REFERENCE(RetainLocaleStringAttributeBridge,
                            ReleaseLocaleStringAttributeBridge)
         LocaleStringAttributeBridge

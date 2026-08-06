@@ -5,6 +5,8 @@
 #ifndef FLUTTER_SWIFT_SCENE_BRIDGE_H_
 #define FLUTTER_SWIFT_SCENE_BRIDGE_H_
 
+#include "swift_bridge_export.h"
+
 #include <swift/bridging>
 #include "intrusive_reference_counted.h"
 
@@ -44,7 +46,7 @@ class ImageBridge;
 /// REASON: The async path requires UIDartState for task runner access and
 /// SnapshotDelegate, which are Dart VM specific. A future engine integration
 /// layer will provide the async path.
-class __attribute__((visibility("default")))
+class FLUTTER_SWIFT_BRIDGE_EXPORT
     SWIFT_SHARED_REFERENCE(RetainSceneBridge, ReleaseSceneBridge)
         SceneBridge
     : public IntrusiveReferenceCounted<SceneBridge> {

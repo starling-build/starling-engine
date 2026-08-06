@@ -5,6 +5,8 @@
 #ifndef FLUTTER_SWIFT_FRAGMENT_SHADER_BRIDGE_H_
 #define FLUTTER_SWIFT_FRAGMENT_SHADER_BRIDGE_H_
 
+#include "swift_bridge_export.h"
+
 #include <swift/bridging>
 #include "intrusive_reference_counted.h"
 #include "fragment_program_bridge.h"
@@ -50,7 +52,7 @@ struct FragmentShaderImpl;
 /// pointing into the SkData buffer. The Swift bridge exposes SetFloat/GetFloat
 /// methods instead, since Swift cannot create an external typed data view
 /// into C++ memory in the same way.
-class __attribute__((visibility("default")))
+class FLUTTER_SWIFT_BRIDGE_EXPORT
     SWIFT_SHARED_REFERENCE(RetainFragmentShaderBridge,
                            ReleaseFragmentShaderBridge)
         FragmentShaderBridge

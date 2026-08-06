@@ -5,6 +5,8 @@
 #ifndef FLUTTER_SWIFT_FONT_COLLECTION_BRIDGE_H_
 #define FLUTTER_SWIFT_FONT_COLLECTION_BRIDGE_H_
 
+#include "swift_bridge_export.h"
+
 #include <swift/bridging>
 
 #include <cstddef>
@@ -36,7 +38,7 @@ namespace flutter::swift_bridge {
 /// REASON: The actual font loading (creating SkTypeface) is synchronous.
 /// The Dart version was async because of the callback/futurize pattern,
 /// but the underlying operation doesn't require async behavior.
-__attribute__((visibility("default"))) bool LoadFontFromList(
+FLUTTER_SWIFT_BRIDGE_EXPORT bool LoadFontFromList(
     const uint8_t* data,
     size_t length,
     const char* family_name);
@@ -45,7 +47,7 @@ __attribute__((visibility("default"))) bool LoadFontFromList(
 ///
 /// This should be called after loading fonts to ensure the paragraph
 /// builder picks up the new fonts.
-__attribute__((visibility("default"))) void ClearFontFamilyCache();
+FLUTTER_SWIFT_BRIDGE_EXPORT void ClearFontFamilyCache();
 
 }  // namespace flutter::swift_bridge
 

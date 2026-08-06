@@ -5,6 +5,8 @@
 #ifndef FLUTTER_SWIFT_SCENE_BUILDER_BRIDGE_H_
 #define FLUTTER_SWIFT_SCENE_BUILDER_BRIDGE_H_
 
+#include "swift_bridge_export.h"
+
 #include <swift/bridging>
 #include "intrusive_reference_counted.h"
 
@@ -49,7 +51,7 @@ class PictureBridge;
 ///
 /// Each Push* method returns an EngineLayerBridge* wrapping the new
 /// ContainerLayer. The caller (Swift) owns the returned bridge object.
-class __attribute__((visibility("default")))
+class FLUTTER_SWIFT_BRIDGE_EXPORT
     SWIFT_SHARED_REFERENCE(RetainSceneBuilderBridge, ReleaseSceneBuilderBridge)
         SceneBuilderBridge
     : public IntrusiveReferenceCounted<SceneBuilderBridge> {

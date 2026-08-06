@@ -5,6 +5,8 @@
 #ifndef FLUTTER_SWIFT_RSUPERELLIPSE_BRIDGE_H_
 #define FLUTTER_SWIFT_RSUPERELLIPSE_BRIDGE_H_
 
+#include "swift_bridge_export.h"
+
 #include <swift/bridging>
 #include "intrusive_reference_counted.h"
 
@@ -27,7 +29,7 @@ struct RSuperellipseImpl;
 /// C++ bridge wrapping Flutter's RSuperellipse.
 ///
 /// **Dart Source:** `engine/src/flutter/lib/ui/geometry.dart:2051-2110`
-class __attribute__((visibility("default")))
+class FLUTTER_SWIFT_BRIDGE_EXPORT
     SWIFT_SHARED_REFERENCE(RetainRSuperellipseBridge, ReleaseRSuperellipseBridge)
         RSuperellipseBridge
     : public IntrusiveReferenceCounted<RSuperellipseBridge> {

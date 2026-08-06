@@ -9,6 +9,31 @@ config("desktop_library_implementation") {
   defines = [ "FLUTTER_DESKTOP_LIBRARY" ]
 }
 
+# What the targets here need from the embedder API.
+#
+# They use embedder.h's types (FlutterDesktopMessage, FlutterSemanticsNode and
+# friends) but call no embedder API function, so headers are enough. Upstream
+# points them at embedder_as_internal_library, which compiles a whole private
+# copy of the engine into whatever platform library links them.
+#
+# On Windows that copy is not merely wasteful: it brings a second set of
+# SwiftBridgeEngineRegistry statics into flutter_windows.dll. ELF and Mach-O
+# collapse such duplicates by symbol interposition, so Linux and macOS never
+# notice; a Windows DLL binds to its own definition instead. The result was
+# that the shell registered the font collection in flutter_windows.dll's copy
+# while the Swift bridge read flutter_engine.dll's and got null — surfacing as
+# every text run failing with "Invalid text provided to addText", a message
+# about the text rather than about the linkage.
+#
+# Left as upstream has it off Windows deliberately: the duplicate is harmless
+# there, and this is an upstream file, so the fork's delta stays minimal.
+if (is_win) {
+  _embedder_dep = "//flutter/shell/platform/embedder:embedder_headers"
+} else {
+  _embedder_dep =
+      "//flutter/shell/platform/embedder:embedder_as_internal_library"
+}
+
 _public_headers = [
   "public/flutter_export.h",
   "public/flutter_macros.h",
@@ -108,7 +133,7 @@ source_set("common_cpp_accessibility") {
 
   public_deps = [
     "//flutter/fml",
-    "//flutter/shell/platform/embedder:embedder_as_internal_library",
+    _embedder_dep,
     "//flutter/third_party/accessibility",
   ]
 }
@@ -135,7 +160,7 @@ source_set("common_cpp") {
   deps = [
     ":common_cpp_library_headers",
     "//flutter/shell/platform/common/client_wrapper",
-    "//flutter/shell/platform/embedder:embedder_as_internal_library",
+    _embedder_dep,
   ]
 
   public_deps = [
