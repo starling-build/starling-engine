@@ -28,6 +28,7 @@
 #include <libudev.h>
 #include <poll.h>
 #include <sys/epoll.h>
+#include <sys/eventfd.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
 #include <xf86drm.h>
@@ -315,10 +316,12 @@ struct FlDrmView {
   FlDrmExternalTextureCallback external_texture_callback = nullptr;
   void* external_texture_user_data = nullptr;
 
-  // Present (page-flip) callback — set from Swift, invoked on the platform
-  // thread by the swap chain when a flip lands.
-  FlDrmPresentCallback present_callback = nullptr;
-  void* present_callback_user_data = nullptr;
+  // Present (page-flip) callback — set from Swift, fires on the platform
+  // thread for EVERY output's flips with the output index, that output's
+  // own refresh period, and whether frames were dropped on it since the
+  // last flip (mailbox mode on secondaries).
+  FlDrmOutputPresentCallback output_present_callback = nullptr;
+  void* output_present_callback_user_data = nullptr;
 
   // Screen-recording frame callback — set from Swift, invoked on the
   // recorder's writer thread (see fl_drm_view.h).
@@ -327,7 +330,15 @@ struct FlDrmView {
   // Zero-copy sibling: dmabuf frames, invoked on the presenting thread.
   FlDrmRecordDmabufCallback record_dmabuf_callback = nullptr;
   void* record_dmabuf_user_data = nullptr;
-  uint32_t refresh_ns = 0;  // display refresh period, from the DRM mode
+
+  // Cross-thread trampoline onto the platform thread: closures queued from
+  // any thread, drained in the epoll loop when the eventfd trips. This is
+  // what lets the app run platform-thread-only calls (AddView/RemoveView,
+  // set_primary_output) at runtime — the outputs-changed callback is the
+  // only other entry point onto that thread and it only fires on hotplug.
+  std::mutex posted_task_mutex;
+  std::vector<std::pair<void (*)(void*), void*>> posted_tasks;
+  int post_task_eventfd = -1;
 
   // Damage tracking for partial repaint.
   // Stores the last 2 frames' frame_damage rects so we can report
@@ -1494,6 +1505,35 @@ static void RebuildInputRegions(FlDrmView* view) {
 // Platform thread: tear down a removed output's resources. Only called once
 // the engine has stopped presenting its view (RemoveView completed) — or
 // when the output never had a view.
+// Platform thread: a page flip landed on some output's CRTC. ONE bridge
+// serves every chain — demux by CRTC, fire the public present callback with
+// that output's index and its own refresh period. The dropped flag surfaces
+// mailbox drops (skip_when_busy) so the app can re-present the final frame
+// of an animation; without that a drop leaves the panel one frame stale
+// forever.
+static void OnChainFlip(void* ud, uint64_t flip_time_ns, uint32_t crtc_id) {
+  auto* view = static_cast<FlDrmView*>(ud);
+  size_t index = view->display.primary_index();
+  for (size_t i = 0; i < view->display.num_outputs(); i++) {
+    if (view->display.output(i).crtc_id == crtc_id) {
+      index = i;
+      break;
+    }
+  }
+  int dropped = 0;
+  if (index < view->output_resources.size() &&
+      view->output_resources[index].chain) {
+    dropped = view->output_resources[index].chain->take_dropped() ? 1 : 0;
+  }
+  if (view->output_present_callback) {
+    uint32_t vrefresh = view->display.output(index).mode.vrefresh;
+    uint32_t refresh_ns = vrefresh > 0 ? 1000000000u / vrefresh : 0;
+    view->output_present_callback(view->output_present_callback_user_data,
+                                  static_cast<uint32_t>(index), flip_time_ns,
+                                  refresh_ns, dropped);
+  }
+}
+
 static void CompleteOutputTeardown(FlDrmView* view,
                                    size_t index,
                                    int64_t view_id) {
@@ -1644,6 +1684,9 @@ static void HandleDrmHotplug(FlDrmView* view) {
     res.chain = new FlDrmSwapChain(&view->display, &view->egl, out,
                                    res.gbm_surface_ptr, res.egl_surface);
     res.chain->set_vt_active(&view->vt_active);
+    res.chain->set_present_callback(OnChainFlip, view);
+    // Hotplugged outputs are never the primary (it keeps its slot).
+    res.chain->set_skip_when_busy(true);
     if (!res.chain->InitialModeSet(view->modeset_context)) {
       fprintf(stderr, "[DrmView] hotplug: %s mode set failed\n", out.name);
       delete res.chain;
@@ -1832,26 +1875,13 @@ FlDrmView* fl_drm_view_create(const char* assets_path,
     res.chain = new FlDrmSwapChain(&view->display, &view->egl, out,
                                    res.gbm_surface_ptr, res.egl_surface);
     res.chain->set_vt_active(&view->vt_active);
+    // Every chain reports its flips through the one bridge (demuxed by
+    // CRTC); only the primary blocks the presenter — secondaries drop
+    // frames instead, so a slow panel cannot stall the raster thread.
+    res.chain->set_present_callback(OnChainFlip, view);
+    res.chain->set_skip_when_busy(i != primary_index);
   }
   view->swap_chain = view->output_resources[primary_index].chain;
-
-  // Refresh period from the primary's mode (vrefresh is integer Hz).
-  {
-    uint32_t vrefresh = view->display.mode().vrefresh;
-    view->refresh_ns = vrefresh > 0 ? 1000000000u / vrefresh : 0;
-  }
-  // Bridge PRIMARY flip completions to the public present callback — the
-  // compositor paces Wayland clients off it, so secondary outputs' flips
-  // must not fire it (per-output pacing comes with per-output views).
-  view->swap_chain->set_present_callback(
-      [](void* ud, uint64_t flip_time_ns) {
-        auto* v = static_cast<FlDrmView*>(ud);
-        if (v->present_callback) {
-          v->present_callback(v->present_callback_user_data, flip_time_ns,
-                              v->refresh_ns);
-        }
-      },
-      view);
 
   // Initial modeset on every output (secondaries show black until they get
   // their own Flutter views).
@@ -1906,6 +1936,34 @@ FlDrmView* fl_drm_view_create(const char* assets_path,
       udev_monitor_enable_receiving(view->hotplug_monitor);
       fprintf(stderr, "[DrmView] Hotplug monitor active\n");
     }
+  }
+
+  // 4d. The post-task trampoline (fl_drm_view_post_task). An eventfd
+  // registered through the external-fd table — create runs before
+  // fl_drm_view_run, so it makes the epoll set the same way an app fd does.
+  // The drain callback runs on the platform thread.
+  view->post_task_eventfd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+  if (view->post_task_eventfd >= 0) {
+    fl_drm_view_add_external_fd(
+        view, view->post_task_eventfd,
+        [](void* ud) {
+          auto* v = static_cast<FlDrmView*>(ud);
+          uint64_t drained = 0;
+          ssize_t n = read(v->post_task_eventfd, &drained, sizeof(drained));
+          (void)n;
+          std::vector<std::pair<void (*)(void*), void*>> tasks;
+          {
+            std::lock_guard<std::mutex> lock(v->posted_task_mutex);
+            tasks.swap(v->posted_tasks);
+          }
+          for (auto& t : tasks) {
+            t.first(t.second);
+          }
+        },
+        view);
+  } else {
+    fprintf(stderr, "[DrmView] post-task eventfd failed: %s\n",
+            strerror(errno));
   }
 
   // The primary's pixel ratio: used for its window metrics and its pointer
@@ -2250,6 +2308,166 @@ int fl_drm_view_add_output_view(FlDrmView* view,
     return 0;
   }
   view->multi_view = true;
+  return 1;
+}
+
+double fl_drm_view_get_output_derived_scale(FlDrmView* view, uint32_t index) {
+  if (!view || index >= view->display.num_outputs()) {
+    return 1.0;
+  }
+  return DeriveScale(view->display.output(index));
+}
+
+int fl_drm_view_set_primary_output(FlDrmView* view,
+                                    uint32_t index,
+                                    double pixel_ratio) {
+  if (!view || !view->engine || index >= view->display.num_outputs()) {
+    return 0;
+  }
+  if (!view->use_compositor) {
+    // The legacy path presents through view->swap_chain from inside the
+    // engine's own present callback; there is no safe point to retarget it.
+    fprintf(stderr,
+            "[DrmView] set_primary_output needs the compositor path\n");
+    return 0;
+  }
+  if (index == view->display.primary_index()) {
+    return 0;
+  }
+  if (!view->display.output(index).alive) {
+    fprintf(stderr, "[DrmView] set_primary_output: output %u is gone\n",
+            index);
+    return 0;
+  }
+  auto& res = view->output_resources[index];
+  if (!res.chain || res.egl_surface == EGL_NO_SURFACE) {
+    fprintf(stderr, "[DrmView] set_primary_output: output %u is disabled\n",
+            index);
+    return 0;
+  }
+  // The recorder freezes its capture dimensions and ring sizes at session
+  // start against the CURRENT primary; switching under it feeds an encoder
+  // wrong-sized frames. Refuse — the app retries after recording ends.
+  if (g_api_recording.load(std::memory_order_acquire) ||
+      g_api_record_start.load(std::memory_order_acquire) >= 0) {
+    fprintf(stderr,
+            "[DrmView] set_primary_output refused: recording active\n");
+    return 0;
+  }
+  // A teardown in flight for this slot means its chain is about to be
+  // deleted under us (connector bounced during the switch).
+  {
+    std::lock_guard<std::mutex> lock(view->teardown_mutex);
+    for (const auto& t : view->pending_teardowns) {
+      if (t.first == index) {
+        fprintf(stderr,
+                "[DrmView] set_primary_output refused: output %u tearing "
+                "down\n",
+                index);
+        return 0;
+      }
+    }
+  }
+
+  const size_t old_index = view->display.primary_index();
+
+  // 1. Detach the explicit view currently on the target output. Erasing the
+  // map entry stops present routing immediately (CompositorPresentView drops
+  // unmapped views); the async RemoveView completion only logs. It must NOT
+  // go through pending_teardowns — CompleteOutputTeardown would disable the
+  // CRTC and destroy the chain/EGL/GBM surfaces the implicit view is about
+  // to move onto. The output stays connected; only the view leaves.
+  int64_t displaced = -1;
+  {
+    std::lock_guard<std::mutex> lock(view->view_map_mutex);
+    for (const auto& entry : view->view_to_output) {
+      if (entry.second == index && entry.first != 0) {
+        displaced = entry.first;
+        break;
+      }
+    }
+    if (displaced > 0) {
+      view->view_to_output.erase(displaced);
+    }
+  }
+  if (displaced > 0) {
+    FlutterRemoveViewInfo info = {};
+    info.struct_size = sizeof(FlutterRemoveViewInfo);
+    info.view_id = displaced;
+    info.user_data = reinterpret_cast<void*>(static_cast<intptr_t>(displaced));
+    info.remove_view_callback = [](const FlutterRemoveViewResult* result) {
+      fprintf(stderr,
+              "[DrmView] RemoveView %lld (displaced by primary switch) -> "
+              "%s\n",
+              (long long)(intptr_t)result->user_data,
+              result->removed ? "removed" : "FAILED");
+    };
+    if (FlutterEngineRemoveView(view->engine, &info) != kSuccess) {
+      fprintf(stderr,
+              "[DrmView] FlutterEngineRemoveView(%lld) rejected — "
+              "continuing; its frames are unrouted anyway\n",
+              (long long)displaced);
+    }
+  }
+
+  // 2. Rebind primary state. Mirrors what fl_drm_view_create does for the
+  // startup primary (surface, present bridge, chain alias, refresh period,
+  // view_to_output[0]). The raster thread reads primary_index() and the EGL
+  // primary surface without a lock; those races are one-frame benign — a
+  // frame either runs capture hooks on the old output once or re-binds the
+  // old surface once (Skia draws into FBOs; the window surface only matters
+  // at the present-time blit, which binds per view explicitly).
+  view->display.set_primary(index);
+  view->egl.set_primary_surface(res.egl_surface);
+  // The flip bridge is installed on every chain and demuxes by CRTC, so
+  // nothing to re-register — the legacy (primary-only) callback follows
+  // primary_index inside it. What DOES move is the blocking behavior: the
+  // new primary paces the pipeline (blocks), the old one becomes a
+  // frame-dropping mailbox like every other secondary.
+  if (auto* old_chain = view->output_resources[old_index].chain) {
+    old_chain->set_skip_when_busy(true);
+  }
+  res.chain->set_skip_when_busy(false);
+  view->swap_chain = res.chain;
+  {
+    std::lock_guard<std::mutex> lock(view->view_map_mutex);
+    view->view_to_output[0] = index;
+  }
+  // Force a full repaint on the new panel — the damage history describes
+  // buffers on the old one (same reset the VT re-acquire does).
+  view->damage_history_count = 0;
+
+  // 3. The implicit view's metrics at the new output's mode.
+  const FlDrmOutput& out = view->display.output(index);
+  if (pixel_ratio <= 0) {
+    pixel_ratio = DeriveScale(out);
+  }
+  if (pixel_ratio < 0.5) pixel_ratio = 0.5;
+  if (pixel_ratio > 4.0) pixel_ratio = 4.0;
+  FlutterWindowMetricsEvent metrics = {};
+  metrics.struct_size = sizeof(FlutterWindowMetricsEvent);
+  metrics.width = out.width();
+  metrics.height = out.height();
+  metrics.pixel_ratio = pixel_ratio;
+  metrics.view_id = 0;
+  FlutterEngineSendWindowMetricsEvent(view->engine, &metrics);
+
+  // 4. Pointer space: the new primary is placed (position comes from the
+  // app's set_output_layout pass right after; scale has to be right NOW so
+  // the pointer works between the two calls).
+  if (view->placements.size() < view->display.num_outputs()) {
+    view->placements.resize(view->display.num_outputs());
+  }
+  view->placements[index].placed = true;
+  view->placements[index].scale = pixel_ratio;
+  RebuildInputRegions(view);
+  FlutterEngineScheduleFrame(view->engine);
+
+  fprintf(stderr,
+          "[DrmView] primary output %s -> %s (%ux%u @%.2fx); old primary "
+          "awaits its own view\n",
+          view->display.output(old_index).name, out.name, out.width(),
+          out.height(), pixel_ratio);
   return 1;
 }
 
@@ -2829,6 +3047,22 @@ void fl_drm_view_add_external_fd(FlDrmView* view,
   ext.user_data = user_data;
 }
 
+int fl_drm_view_post_task(FlDrmView* view,
+                          void (*fn)(void* user_data),
+                          void* user_data) {
+  if (!view || !fn || view->post_task_eventfd < 0) {
+    return 0;
+  }
+  {
+    std::lock_guard<std::mutex> lock(view->posted_task_mutex);
+    view->posted_tasks.emplace_back(fn, user_data);
+  }
+  uint64_t one = 1;
+  ssize_t n = write(view->post_task_eventfd, &one, sizeof(one));
+  (void)n;  // eventfd writes only fail at UINT64_MAX pending — unreachable
+  return 1;
+}
+
 void fl_drm_view_set_cursor_shape(FlDrmView* view, int shape) {
   if (!view) {
     return;
@@ -2836,14 +3070,14 @@ void fl_drm_view_set_cursor_shape(FlDrmView* view, int shape) {
   view->cursor.SetShape(static_cast<flutter::FlCursorShape>(shape));
 }
 
-void fl_drm_view_set_present_callback(FlDrmView* view,
-                                       FlDrmPresentCallback cb,
-                                       void* user_data) {
+void fl_drm_view_set_output_present_callback(FlDrmView* view,
+                                             FlDrmOutputPresentCallback cb,
+                                             void* user_data) {
   if (!view) {
     return;
   }
-  view->present_callback_user_data = user_data;
-  view->present_callback = cb;
+  view->output_present_callback_user_data = user_data;
+  view->output_present_callback = cb;
 }
 
 void fl_drm_view_set_record_frame_callback(FlDrmView* view,

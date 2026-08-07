@@ -9,6 +9,7 @@
 #include <gbm.h>
 #include <stdint.h>
 
+#include <atomic>
 #include <condition_variable>
 #include <mutex>
 
@@ -24,8 +25,11 @@ class FlDrmEgl;
 class FlDrmSwapChain {
  public:
   // Invoked (on the platform thread) when a page flip completes, with the
-  // kernel's scanout timestamp. Wired up to the compositor's frame pacing.
-  using PresentCallback = void (*)(void* user_data, uint64_t flip_time_ns);
+  // kernel's scanout timestamp and the flipping CRTC — one callback serves
+  // every chain, demuxed by crtc. Wired up to the compositor's frame pacing.
+  using PresentCallback = void (*)(void* user_data,
+                                   uint64_t flip_time_ns,
+                                   uint32_t crtc_id);
 
   FlDrmSwapChain(FlDrmDisplay* display,
                  FlDrmEgl* egl,
@@ -75,6 +79,22 @@ class FlDrmSwapChain {
     present_cb_user_data_ = user_data;
   }
 
+  // Mailbox mode: a Present() arriving while the previous flip is still
+  // pending DROPS the frame (no swap, no flip, no wait) instead of stalling
+  // the calling thread. On for secondary outputs — the raster thread
+  // presents every view sequentially, and one 30Hz panel's flip-wait must
+  // not throttle a 90Hz one. The primary keeps blocking: its back-pressure
+  // is what paces the whole pipeline.
+  void set_skip_when_busy(bool skip) { skip_when_busy_ = skip; }
+
+  // Whether frames were dropped since the last flip landed (cleared by the
+  // read). The flip bridge forwards this so the app can re-present the
+  // final frame of an animation — a drop leaves the panel one frame stale
+  // otherwise, with nothing left in flight to fix it.
+  bool take_dropped() {
+    return dropped_since_flip_.exchange(false, std::memory_order_acq_rel);
+  }
+
   bool waiting_for_flip() const { return waiting_for_flip_; }
   uint32_t crtc_id() const { return output_.crtc_id; }
   const char* name() const { return output_.name; }
@@ -100,6 +120,11 @@ class FlDrmSwapChain {
   std::mutex flip_mutex_;
   std::condition_variable flip_cv_;
   bool waiting_for_flip_ = false;
+
+  // Mailbox mode (secondary outputs). dropped_since_flip_ is written on the
+  // presenting thread, consumed on the platform thread by the flip bridge.
+  bool skip_when_busy_ = false;
+  std::atomic<bool> dropped_since_flip_{false};
 
   PresentCallback present_cb_ = nullptr;
   void* present_cb_user_data_ = nullptr;

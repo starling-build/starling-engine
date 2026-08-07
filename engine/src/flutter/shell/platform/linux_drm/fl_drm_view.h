@@ -81,6 +81,16 @@ FL_DRM_EXPORT void fl_drm_view_add_external_fd(FlDrmView* view,
                                                 void (*callback)(void* user_data),
                                                 void* user_data);
 
+// Run `fn` on the ENGINE PLATFORM thread (the epoll loop). Callable from any
+// thread, any time after fl_drm_view_create; the closure runs on the next
+// loop iteration. This is the runtime door onto the thread that
+// fl_drm_view_add_output_view / fl_drm_view_set_primary_output require —
+// the outputs-changed callback is the only other entry, and it fires only
+// on hotplug. Returns 1 if queued, 0 if the trampoline is unavailable.
+FL_DRM_EXPORT int fl_drm_view_post_task(FlDrmView* view,
+                                        void (*fn)(void* user_data),
+                                        void* user_data);
+
 // Re-send window metrics with a new pixel ratio (for runtime DPI changes).
 FL_DRM_EXPORT void fl_drm_view_send_metrics(FlDrmView* view,
                                              double pixel_ratio);
@@ -256,16 +266,24 @@ typedef enum {
 FL_DRM_EXPORT void fl_drm_view_set_cursor_shape(FlDrmView* view,
                                                  int shape);
 
-// Present (page-flip) notification — fired on the PLATFORM thread each time
-// a queued flip lands on the display, with the kernel's scanout timestamp
-// (CLOCK_MONOTONIC ns) and the display's refresh period in ns. Use this to
-// pace Wayland frame callbacks / presentation feedback off real vsync.
-typedef void (*FlDrmPresentCallback)(void* user_data,
-                                     uint64_t flip_time_ns,
-                                     uint32_t refresh_ns);
-FL_DRM_EXPORT void fl_drm_view_set_present_callback(FlDrmView* view,
-                                                     FlDrmPresentCallback cb,
-                                                     void* user_data);
+// Present (page-flip) notification — fired on the PLATFORM thread for EVERY
+// output's flips, with the output index (fl_drm_view_get_output_info order),
+// the kernel's scanout timestamp (CLOCK_MONOTONIC ns), that output's OWN
+// refresh period, and `dropped` = 1 when frames were mailbox-dropped on this
+// output since its last flip (secondary outputs drop instead of stalling the
+// raster thread — see set_primary_output). Use it to pace Wayland frame
+// callbacks / presentation feedback off each panel's real vsync; on dropped,
+// ask the app to redraw that output — the dropped frame was newer than what
+// the panel shows, and nothing else is in flight to correct it.
+typedef void (*FlDrmOutputPresentCallback)(void* user_data,
+                                           uint32_t output_index,
+                                           uint64_t flip_time_ns,
+                                           uint32_t refresh_ns,
+                                           int dropped);
+FL_DRM_EXPORT void fl_drm_view_set_output_present_callback(
+    FlDrmView* view,
+    FlDrmOutputPresentCallback cb,
+    void* user_data);
 
 // Display refresh rate in mHz (e.g. 30000 for a 30 Hz panel), from the
 // active DRM mode. For wl_output.mode advertisement.
@@ -295,6 +313,14 @@ FL_DRM_EXPORT int fl_drm_view_get_output_info(FlDrmView* view,
                                                char* name_buf,
                                                uint32_t name_buf_size);
 
+// The scale the engine would pick for output `index`'s panel (EDID density
+// when the connector reports it, pixel count otherwise) — the same derivation
+// the primary's startup scale uses. Pure function of the panel; no state.
+// The app seeds per-output layout scales from it instead of guessing without
+// the EDID. Returns 1.0 on a bad index.
+FL_DRM_EXPORT double fl_drm_view_get_output_derived_scale(FlDrmView* view,
+                                                           uint32_t index);
+
 // Create Flutter view `flutter_view_id` (unique, nonzero) rendering to output
 // `index`, with the given pixel ratio. The app decides which outputs get
 // views and what they show (via its multi-view content builder). Requires the
@@ -303,6 +329,26 @@ FL_DRM_EXPORT int fl_drm_view_add_output_view(FlDrmView* view,
                                                uint32_t index,
                                                int64_t flutter_view_id,
                                                double pixel_ratio);
+
+// Rebind the implicit view (id 0) to output `index` — the runtime "make this
+// monitor the primary display" switch. The explicit view currently on that
+// output (if any) is removed; the implicit view's swap chain, EGL surface,
+// window metrics (the output's mode at `pixel_ratio`; <= 0 derives one from
+// the panel), present-callback pacing, capture-hook target, and pointer
+// region all move. The OLD primary keeps its scanout resources and shows its
+// last frame until the app gives it an explicit view via
+// fl_drm_view_add_output_view — which now succeeds for it — and re-runs its
+// fl_drm_view_set_output_layout pass.
+//
+// MUST run on the ENGINE PLATFORM thread (FlutterEngineRemoveView's thread
+// affinity): call it from the outputs-changed callback or through
+// fl_drm_view_post_task. Refused while a recording session is active (the
+// recorder's capture geometry is frozen against the current primary), on the
+// legacy non-compositor path, and for dead or disabled outputs.
+// Returns 1 on success, 0 on refusal.
+FL_DRM_EXPORT int fl_drm_view_set_primary_output(FlDrmView* view,
+                                                  uint32_t index,
+                                                  double pixel_ratio);
 
 // Place output `index` at (logical_x, logical_y) with `scale` in the global
 // logical ("virtual desktop") pointer space. The pointer moves across placed

@@ -56,6 +56,16 @@ class FlDrmDisplay {
   size_t primary_index() const { return primary_; }
   const FlDrmOutput& primary() const { return outputs_[primary_]; }
 
+  // Runtime primary reassignment (fl_drm_view_set_primary_output). Platform
+  // thread only, like RescanConnectors — the "primary is never removed"
+  // rule in RescanConnectors starts protecting the new output and releases
+  // the old one from the moment this returns.
+  void set_primary(size_t i) {
+    if (i < outputs_.size() && outputs_[i].alive) {
+      primary_ = i;
+    }
+  }
+
   // --- Backward-compatible single-output accessors (forward to primary) ---
   uint32_t connector_id() const { return primary().connector_id; }
   uint32_t crtc_id() const { return primary().crtc_id; }

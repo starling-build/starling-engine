@@ -138,6 +138,25 @@ bool FlDrmSwapChain::Present() {
   if (s_dbg)
     fprintf(stderr, "[SwapChain %s] Present#%d enter (waiting_for_flip=%d)\n",
             output_.name, fn, (int)waiting_for_flip_);
+
+  // Mailbox mode: the previous flip hasn't landed — drop this frame rather
+  // than stall the presenting thread. Nothing was swapped or locked, so the
+  // buffer accounting is untouched: the next Present that finds the chain
+  // idle re-blits current content and flips as usual. The drop is recorded
+  // for the flip bridge, which asks the app to re-present — otherwise the
+  // FINAL frame of an animation can be the dropped one, leaving the panel
+  // a frame stale with nothing in flight to correct it.
+  if (skip_when_busy_) {
+    std::lock_guard<std::mutex> lock(flip_mutex_);
+    if (waiting_for_flip_) {
+      dropped_since_flip_.store(true, std::memory_order_release);
+      if (s_dbg)
+        fprintf(stderr, "[SwapChain %s] Present#%d dropped (flip pending)\n",
+                output_.name, fn);
+      return true;
+    }
+  }
+
   // Wait for any pending page flip to complete. The flip event is read on
   // the platform thread (DrainDrmEvents), which signals the condvar. The
   // periodic timeout re-checks VT state — after a VT switch the event may
@@ -294,8 +313,9 @@ void FlDrmSwapChain::HandlePageFlipEvent(uint64_t flip_time_ns) {
   flip_cv_.notify_all();
   // Fire the present callback (platform thread) with the kernel's scanout
   // timestamp so the compositor can pace Wayland clients off real vsync.
+  // The CRTC identifies which output this is — one bridge serves all chains.
   if (present_cb_) {
-    present_cb_(present_cb_user_data_, flip_time_ns);
+    present_cb_(present_cb_user_data_, flip_time_ns, output_.crtc_id);
   }
 }
 
