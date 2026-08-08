@@ -270,6 +270,9 @@ struct FlDrmView {
   };
   std::mutex external_mutex;
   std::vector<std::unique_ptr<ExternalOutput>> external_outputs;
+  void (*external_input_cb)(uint32_t, int, double, double, int64_t, double,
+                            double, void*) = nullptr;
+  void* external_input_user = nullptr;
 
   // FlutterCompositor path: the engine renders each view into an FBO backing
   // store; present_view blits it onto the mapped output's window surface and
@@ -1488,6 +1491,9 @@ static bool CompositorPresentView(const FlutterPresentViewInfo* info) {
 
 // Rebuild the input layer's pointer regions from the placed outputs that
 // have Flutter views (the primary is the implicit view 0).
+static FlDrmView::ExternalOutput* FindExternalOutput(FlDrmView* view,
+                                                     size_t index);
+
 static void RebuildInputRegions(FlDrmView* view) {
   std::vector<FlInputRegion> regions;
   for (size_t i = 0; i < view->display.num_outputs(); i++) {
@@ -1506,8 +1512,14 @@ static void RebuildInputRegions(FlDrmView* view) {
         }
       }
     }
+    bool external = false;
     if (view_id < 0) {
-      continue;  // no Flutter view renders it — pointer skips this output
+      std::lock_guard<std::mutex> elock(view->external_mutex);
+      external = FindExternalOutput(view, i) != nullptr;
+      if (!external) {
+        continue;  // no Flutter view renders it — pointer skips this output
+      }
+      view_id = 0;  // unused: events route to the external router
     }
     const auto& placement = view->placements[i];
     const FlDrmOutput& out = view->display.output(i);
@@ -1519,6 +1531,7 @@ static void RebuildInputRegions(FlDrmView* view) {
     region.logical_h = out.height() / placement.scale;
     region.view_id = view_id;
     region.crtc_id = out.crtc_id;
+    region.external_output = external ? (int)i : -1;
     regions.push_back(region);
   }
   view->input.SetRegions(regions);
@@ -2497,7 +2510,7 @@ int fl_drm_view_set_output_external(FlDrmView* view,
   if (!view || output_id >= view->display.num_outputs()) {
     return 0;
   }
-  std::lock_guard<std::mutex> elock(view->external_mutex);
+  std::unique_lock<std::mutex> elock(view->external_mutex);
   FlDrmView::ExternalOutput* existing = FindExternalOutput(view, output_id);
   if (!external) {
     if (!existing) return 1;
@@ -2551,9 +2564,29 @@ int fl_drm_view_set_output_external(FlDrmView* view,
   ext->thread =
       std::thread([view, raw, ctx]() { ExternalPresentLoop(view, raw, ctx); });
   view->external_outputs.push_back(std::move(ext));
+  view->input.set_external_router(
+      [](int output, int phase, double x, double y, int64_t buttons,
+         double sdx, double sdy, void* user) {
+        FlDrmView* v = static_cast<FlDrmView*>(user);
+        if (v->external_input_cb) {
+          v->external_input_cb((uint32_t)output, phase, x, y, buttons, sdx,
+                               sdy, v->external_input_user);
+        }
+      },
+      view);
+  // RebuildInputRegions re-takes external_mutex — drop it first.
+  elock.unlock();
+  RebuildInputRegions(view);
   fprintf(stderr, "[DrmView] output %u (%s) is now externally sourced\n",
           output_id, view->display.output(output_id).name);
   return 1;
+}
+
+void fl_drm_view_set_external_input_callback(
+    FlDrmView* view, FlDrmExternalInputCallback callback, void* user_data) {
+  if (!view) return;
+  view->external_input_cb = callback;
+  view->external_input_user = user_data;
 }
 
 int fl_drm_view_push_external_frame(FlDrmView* view,

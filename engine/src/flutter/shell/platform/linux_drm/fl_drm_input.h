@@ -29,6 +29,9 @@ struct FlInputRegion {
   double scale = 1.0;   // physical pixels per logical unit on this output
   int64_t view_id = 0;  // Flutter view receiving this region's events
   uint32_t crtc_id = 0;
+  // >=0: externally sourced output — events go to the external router
+  // (view-local physical coords), never to a Flutter view.
+  int external_output = -1;
 
   bool Contains(double x, double y) const {
     return x >= logical_x && x < logical_x + logical_w && y >= logical_y &&
@@ -40,6 +43,16 @@ class FlDrmInput {
  public:
   FlDrmInput();
   ~FlDrmInput();
+
+  // Router for regions whose output is externally sourced. phase is the
+  // FlutterPointerPhase raw value; x/y are view-local PHYSICAL.
+  using ExternalRouter = void (*)(int output, int phase, double x, double y,
+                                  int64_t buttons, double scroll_dx,
+                                  double scroll_dy, void* user_data);
+  void set_external_router(ExternalRouter router, void* user_data) {
+    external_router_ = router;
+    external_router_user_ = user_data;
+  }
 
   // Initialize libinput + xkbcommon. The display size seeds a single default
   // region (scale 1) until SetRegions is called. Device opens are brokered
@@ -77,6 +90,8 @@ class FlDrmInput {
   bool CursorPlacement(uint32_t* crtc_id, int* x, int* y) const;
 
  private:
+  ExternalRouter external_router_ = nullptr;
+  void* external_router_user_ = nullptr;
   void HandlePointerMotion(libinput_event* event);
   void HandlePointerMotionAbsolute(libinput_event* event);
   void HandlePointerButton(libinput_event* event);
