@@ -2289,14 +2289,17 @@ static GLuint ExternalCompileShader(GLenum type, const char* src) {
 }
 
 static GLuint ExternalBuildProgram() {
-  // Source memory row 0 is the top scanline; the window surface stores
-  // GL's bottom-up framebuffer top-down on swap — so clip-space top must
-  // sample texel row 0, hence the inverted v.
+  // Source memory row 0 is the top scanline. Which clip corner samples
+  // texel (0,0) depends on the scanout driver's swap convention;
+  // FLUTTER_DRM_EXTERNAL_ORIENT overrides the default (bit 0 = flip v,
+  // bit 1 = flip u) for bring-up on unfamiliar stacks.
   static const char* kVs =
       "attribute vec2 pos;\n"
+      "uniform vec2 flip;\n"
       "varying vec2 uv;\n"
       "void main() {\n"
-      "  uv = vec2(pos.x * 0.5 + 0.5, 0.5 - pos.y * 0.5);\n"
+      "  vec2 base = pos * 0.5 + 0.5;\n"
+      "  uv = mix(base, 1.0 - base, flip);\n"
       "  gl_Position = vec4(pos, 0.0, 1.0);\n"
       "}\n";
   static const char* kFs =
@@ -2355,6 +2358,16 @@ static void ExternalPresentLoop(FlDrmView* view,
   glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
   glUseProgram(prog);
   glUniform1i(glGetUniformLocation(prog, "tex"), 0);
+  // Default: sample the source directly — a contract-compliant producer's
+  // buffer needs no inversion through this scanout path (determined
+  // empirically with the per-screen shell child; the env override exists
+  // for bring-up on stacks with different swap conventions).
+  int orient = 0;
+  if (const char* o = getenv("FLUTTER_DRM_EXTERNAL_ORIENT")) {
+    if (o[0]) orient = atoi(o);
+  }
+  glUniform2f(glGetUniformLocation(prog, "flip"),
+              (orient & 2) ? 1.0f : 0.0f, (orient & 1) ? 1.0f : 0.0f);
   glActiveTexture(GL_TEXTURE0);
 
   ExternalImportSlot slots[8];
@@ -2681,9 +2694,9 @@ static void ExternalTestProducer(FlDrmView* view, size_t out_idx) {
       glClear(GL_COLOR_BUFFER_BIT);
     }
     // Orientation marker: a white band that must appear at the TOP of the
-    // panel (GL y is bottom-up; swap stores it top-down; the presenter's
-    // inverted v puts GL-top back on top).
-    glScissor(0, (GLint)h - 32, (GLint)w, 32);
+    // panel (raw fbo-0 GL content reaches the panel bottom-up through the
+    // orient-0 presenter, so the band is drawn at GL bottom).
+    glScissor(0, 0, (GLint)w, 32);
     glClearColor(1.0f, 1.0f, 1.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     glDisable(GL_SCISSOR_TEST);
