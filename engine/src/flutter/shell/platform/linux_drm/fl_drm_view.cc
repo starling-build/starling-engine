@@ -1519,7 +1519,12 @@ static void RebuildInputRegions(FlDrmView* view) {
       if (!external) {
         continue;  // no Flutter view renders it — pointer skips this output
       }
-      view_id = 0;  // unused: events route to the external router
+      // view_id stays -1: events route to the external router and never
+      // carry it. It must NOT be 0 — PrimaryRegion() selects the host by
+      // view_id == 0, and an external output that enumerates before the
+      // host would become "primary": every absolute device (tablets, the
+      // shell-drive harness) then maps into the external screen instead
+      // of the desktop.
     }
     const auto& placement = view->placements[i];
     const FlDrmOutput& out = view->display.output(i);
