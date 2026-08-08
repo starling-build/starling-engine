@@ -16,7 +16,9 @@
 #include <deque>
 #include <errno.h>
 #include <map>
+#include <memory>
 #include <mutex>
+#include <sys/stat.h>
 #include <thread>
 #include <vector>
 #include <fcntl.h>
@@ -248,6 +250,26 @@ struct FlDrmView {
   std::vector<OutputResources> output_resources;
   FlDrmSwapChain* swap_chain = nullptr;  // primary output's chain (engine path)
   std::vector<std::thread> secondary_test_threads;
+
+  // External outputs (fl_drm_view_set_output_external): content arrives as
+  // pushed dma-buf frames; a presenter thread imports and flips them.
+  // Entries are never erased once created — a disabled output keeps its
+  // stopped entry, so a racing push can never dangle.
+  struct ExternalOutput {
+    size_t output_index = 0;
+    std::mutex mu;
+    std::condition_variable cv;
+    int pending_fd = -1;  // dup'd, owned until consumed or replaced
+    uint32_t pending_stride = 0;
+    uint32_t pending_offset = 0;
+    uint32_t pending_fourcc = 0;
+    uint64_t pending_ts = 0;
+    bool has_pending = false;
+    bool stop = false;
+    std::thread thread;
+  };
+  std::mutex external_mutex;
+  std::vector<std::unique_ptr<ExternalOutput>> external_outputs;
 
   // FlutterCompositor path: the engine renders each view into an FBO backing
   // store; present_view blits it onto the mapped output's window surface and
@@ -2238,6 +2260,463 @@ int fl_drm_view_get_output_info(FlDrmView* view,
   return 1;
 }
 
+// ─── External outputs (Stage A of the NVIDIA-view plan) ─────────────────────
+//
+// See fl_drm_view.h for the contract. The presenter is the same
+// aux-context-plus-thread shape as FLUTTER_DRM_SECONDARY_TEST: one thread
+// per external output owns an unshared context bound to that output's
+// window surface, samples each pushed dma-buf through an EGLImage (cached
+// per buffer — the producer cycles a small swapchain), draws it fullscreen
+// and flips through the existing chain.
+
+struct ExternalImportSlot {
+  uint64_t dev = 0, ino = 0;
+  EGLImageKHR image = EGL_NO_IMAGE_KHR;
+  GLuint tex = 0;
+};
+
+static GLuint ExternalCompileShader(GLenum type, const char* src) {
+  GLuint s = glCreateShader(type);
+  glShaderSource(s, 1, &src, nullptr);
+  glCompileShader(s);
+  GLint ok = 0;
+  glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
+  if (!ok) {
+    glDeleteShader(s);
+    return 0;
+  }
+  return s;
+}
+
+static GLuint ExternalBuildProgram() {
+  // Source memory row 0 is the top scanline; the window surface stores
+  // GL's bottom-up framebuffer top-down on swap — so clip-space top must
+  // sample texel row 0, hence the inverted v.
+  static const char* kVs =
+      "attribute vec2 pos;\n"
+      "varying vec2 uv;\n"
+      "void main() {\n"
+      "  uv = vec2(pos.x * 0.5 + 0.5, 0.5 - pos.y * 0.5);\n"
+      "  gl_Position = vec4(pos, 0.0, 1.0);\n"
+      "}\n";
+  static const char* kFs =
+      "precision mediump float;\n"
+      "varying vec2 uv;\n"
+      "uniform sampler2D tex;\n"
+      "void main() { gl_FragColor = texture2D(tex, uv); }\n";
+  GLuint vs = ExternalCompileShader(GL_VERTEX_SHADER, kVs);
+  GLuint fs = ExternalCompileShader(GL_FRAGMENT_SHADER, kFs);
+  if (!vs || !fs) {
+    if (vs) glDeleteShader(vs);
+    if (fs) glDeleteShader(fs);
+    return 0;
+  }
+  GLuint p = glCreateProgram();
+  glAttachShader(p, vs);
+  glAttachShader(p, fs);
+  glBindAttribLocation(p, 0, "pos");
+  glLinkProgram(p);
+  glDeleteShader(vs);
+  glDeleteShader(fs);
+  GLint ok = 0;
+  glGetProgramiv(p, GL_LINK_STATUS, &ok);
+  if (!ok) {
+    glDeleteProgram(p);
+    return 0;
+  }
+  return p;
+}
+
+static void ExternalPresentLoop(FlDrmView* view,
+                                FlDrmView::ExternalOutput* ext,
+                                EGLContext ctx) {
+  auto& res = view->output_resources[ext->output_index];
+  const FlDrmOutput& out = view->display.output(ext->output_index);
+  const char* name = out.name;
+  if (!view->egl.MakeCurrent(ctx, res.egl_surface)) {
+    fprintf(stderr, "[ExternalOut %s] MakeCurrent failed\n", name);
+    return;
+  }
+  const ZeroCopyFns& fns = GetZeroCopyFns();
+  typedef void (*ImageTargetTexFn)(GLenum, void*);
+  ImageTargetTexFn image_target_tex =
+      (ImageTargetTexFn)eglGetProcAddress("glEGLImageTargetTexture2DOES");
+  GLuint prog = ExternalBuildProgram();
+  if (!prog || !fns.create_image || !fns.destroy_image || !image_target_tex) {
+    fprintf(stderr, "[ExternalOut %s] GL setup failed\n", name);
+    return;
+  }
+  static const GLfloat kTri[] = {-1.f, -1.f, 3.f, -1.f, -1.f, 3.f};
+  GLuint vbo = 0;
+  glGenBuffers(1, &vbo);
+  glBindBuffer(GL_ARRAY_BUFFER, vbo);
+  glBufferData(GL_ARRAY_BUFFER, sizeof kTri, kTri, GL_STATIC_DRAW);
+  glEnableVertexAttribArray(0);
+  glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+  glUseProgram(prog);
+  glUniform1i(glGetUniformLocation(prog, "tex"), 0);
+  glActiveTexture(GL_TEXTURE0);
+
+  ExternalImportSlot slots[8];
+  int slot_next = 0;
+  bool import_error_logged = false;
+  uint64_t frames = 0;
+
+  while (true) {
+    int fd = -1;
+    uint32_t stride = 0, offset = 0, fourcc = 0;
+    {
+      std::unique_lock<std::mutex> lk(ext->mu);
+      ext->cv.wait(lk, [&] { return ext->stop || ext->has_pending; });
+      if (ext->stop) break;
+      fd = ext->pending_fd;
+      stride = ext->pending_stride;
+      offset = ext->pending_offset;
+      fourcc = ext->pending_fourcc;
+      ext->pending_fd = -1;
+      ext->has_pending = false;
+    }
+    if (!view->vt_active) {
+      close(fd);
+      continue;
+    }
+
+    struct stat sb;
+    if (fstat(fd, &sb) != 0) {
+      close(fd);
+      continue;
+    }
+    ExternalImportSlot* slot = nullptr;
+    for (auto& s : slots) {
+      if (s.image != EGL_NO_IMAGE_KHR && s.dev == (uint64_t)sb.st_dev &&
+          s.ino == (uint64_t)sb.st_ino) {
+        slot = &s;
+        break;
+      }
+    }
+    if (!slot) {
+      const EGLint attrs[] = {
+          EGL_WIDTH,
+          (EGLint)out.width(),
+          EGL_HEIGHT,
+          (EGLint)out.height(),
+          EGL_LINUX_DRM_FOURCC_EXT,
+          (EGLint)fourcc,
+          EGL_DMA_BUF_PLANE0_FD_EXT,
+          fd,
+          EGL_DMA_BUF_PLANE0_OFFSET_EXT,
+          (EGLint)offset,
+          EGL_DMA_BUF_PLANE0_PITCH_EXT,
+          (EGLint)stride,
+          EGL_NONE,
+      };
+      EGLImageKHR img = fns.create_image(view->egl.display(), EGL_NO_CONTEXT,
+                                         EGL_LINUX_DMA_BUF_EXT, nullptr,
+                                         attrs);
+      if (img == EGL_NO_IMAGE_KHR) {
+        if (!import_error_logged) {
+          import_error_logged = true;
+          fprintf(stderr,
+                  "[ExternalOut %s] dma-buf import failed (fourcc=0x%x "
+                  "stride=%u) — dropping frames\n",
+                  name, fourcc, stride);
+        }
+        close(fd);
+        continue;
+      }
+      GLuint tex = 0;
+      glGenTextures(1, &tex);
+      glBindTexture(GL_TEXTURE_2D, tex);
+      image_target_tex(GL_TEXTURE_2D, img);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+      slot = &slots[slot_next];
+      slot_next = (slot_next + 1) % 8;
+      if (slot->image != EGL_NO_IMAGE_KHR) {
+        glDeleteTextures(1, &slot->tex);
+        fns.destroy_image(view->egl.display(), slot->image);
+      }
+      slot->dev = (uint64_t)sb.st_dev;
+      slot->ino = (uint64_t)sb.st_ino;
+      slot->image = img;
+      slot->tex = tex;
+    }
+    close(fd);  // the EGLImage holds its own reference
+
+    glViewport(0, 0, (GLsizei)out.width(), (GLsizei)out.height());
+    glBindTexture(GL_TEXTURE_2D, slot->tex);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    if (!res.chain->Present()) {
+      break;
+    }
+    if ((frames++ % 300) == 0) {
+      fprintf(stderr, "[ExternalOut %s] frame %llu\n", name,
+              (unsigned long long)frames - 1);
+    }
+  }
+
+  for (auto& s : slots) {
+    if (s.image != EGL_NO_IMAGE_KHR) {
+      glDeleteTextures(1, &s.tex);
+      fns.destroy_image(view->egl.display(), s.image);
+    }
+  }
+  glDeleteBuffers(1, &vbo);
+  glDeleteProgram(prog);
+  eglMakeCurrent(view->egl.display(), EGL_NO_SURFACE, EGL_NO_SURFACE,
+                 EGL_NO_CONTEXT);
+  fprintf(stderr, "[ExternalOut %s] presenter exited\n", name);
+}
+
+static FlDrmView::ExternalOutput* FindExternalOutput(FlDrmView* view,
+                                                     size_t index) {
+  for (auto& e : view->external_outputs) {
+    if (e->output_index == index) return e.get();
+  }
+  return nullptr;
+}
+
+int fl_drm_view_set_output_external(FlDrmView* view,
+                                    uint32_t output_id,
+                                    int external) {
+  if (!view || output_id >= view->display.num_outputs()) {
+    return 0;
+  }
+  std::lock_guard<std::mutex> elock(view->external_mutex);
+  FlDrmView::ExternalOutput* existing = FindExternalOutput(view, output_id);
+  if (!external) {
+    if (!existing) return 1;
+    {
+      std::lock_guard<std::mutex> lk(existing->mu);
+      existing->stop = true;
+      if (existing->pending_fd >= 0) {
+        close(existing->pending_fd);
+        existing->pending_fd = -1;
+        existing->has_pending = false;
+      }
+    }
+    existing->cv.notify_all();
+    if (view->output_resources[output_id].chain) {
+      view->output_resources[output_id].chain->AbortFlipWait();
+    }
+    if (existing->thread.joinable()) existing->thread.join();
+    return 1;
+  }
+  if (existing) return 1;
+  if (output_id == view->display.primary_index()) {
+    fprintf(stderr, "[DrmView] set_output_external: primary is the shell's\n");
+    return 0;
+  }
+  if (!view->output_resources[output_id].chain) {
+    fprintf(stderr, "[DrmView] set_output_external: output %u disabled\n",
+            output_id);
+    return 0;
+  }
+  {
+    std::lock_guard<std::mutex> lock(view->view_map_mutex);
+    for (const auto& entry : view->view_to_output) {
+      if (entry.second == output_id) {
+        fprintf(stderr,
+                "[DrmView] set_output_external: output %u carries Flutter "
+                "view %lld\n",
+                output_id, (long long)entry.first);
+        return 0;
+      }
+    }
+  }
+  // Context created here (main/platform thread) — FlDrmEgl's bookkeeping
+  // isn't thread-safe; the context is only made current on the presenter.
+  EGLContext ctx = view->egl.CreateAuxContext();
+  if (ctx == EGL_NO_CONTEXT) {
+    return 0;
+  }
+  auto ext = std::make_unique<FlDrmView::ExternalOutput>();
+  ext->output_index = output_id;
+  FlDrmView::ExternalOutput* raw = ext.get();
+  ext->thread =
+      std::thread([view, raw, ctx]() { ExternalPresentLoop(view, raw, ctx); });
+  view->external_outputs.push_back(std::move(ext));
+  fprintf(stderr, "[DrmView] output %u (%s) is now externally sourced\n",
+          output_id, view->display.output(output_id).name);
+  return 1;
+}
+
+int fl_drm_view_push_external_frame(FlDrmView* view,
+                                    uint32_t output_id,
+                                    int fd,
+                                    uint32_t stride,
+                                    uint32_t offset,
+                                    uint32_t fourcc,
+                                    uint64_t timestamp_us) {
+  if (!view || fd < 0) {
+    return 0;
+  }
+  FlDrmView::ExternalOutput* ext = nullptr;
+  {
+    std::lock_guard<std::mutex> elock(view->external_mutex);
+    ext = FindExternalOutput(view, output_id);
+  }
+  if (!ext) {
+    return 0;
+  }
+  int owned = dup(fd);
+  if (owned < 0) {
+    return 0;
+  }
+  {
+    std::lock_guard<std::mutex> lk(ext->mu);
+    if (ext->stop) {
+      close(owned);
+      return 0;
+    }
+    if (ext->has_pending && ext->pending_fd >= 0) {
+      close(ext->pending_fd);  // newest wins
+    }
+    ext->pending_fd = owned;
+    ext->pending_stride = stride;
+    ext->pending_offset = offset;
+    ext->pending_fourcc = fourcc;
+    ext->pending_ts = timestamp_us;
+    ext->has_pending = true;
+  }
+  ext->cv.notify_one();
+  return 1;
+}
+
+// FLUTTER_DRM_EXTERNAL_TEST's producer: renders shifting colour bars on a
+// SECOND GPU (its own gbm device + EGL display, nothing shared with the
+// compositor's) into a linear swapchain and pushes each front buffer to
+// the external output — exactly the per-screen-shell contract, minus the
+// shell. Self-paced: the headless surface has no vsync.
+static void ExternalTestProducer(FlDrmView* view, size_t out_idx) {
+  const FlDrmOutput& out = view->display.output(out_idx);
+  const uint32_t w = out.width(), h = out.height();
+  const char* dev_path = getenv("FLUTTER_DRM_EXTERNAL_TEST_DEVICE");
+  if (!dev_path || !dev_path[0]) dev_path = "/dev/dri/renderD128";
+
+  int fd = open(dev_path, O_RDWR | O_CLOEXEC);
+  if (fd < 0) {
+    fprintf(stderr, "[ExternalTest] open %s failed\n", dev_path);
+    return;
+  }
+  gbm_device* gbm = gbm_create_device(fd);
+  gbm_surface* surf =
+      gbm ? gbm_surface_create(gbm, w, h, GBM_FORMAT_XRGB8888,
+                               GBM_BO_USE_RENDERING | GBM_BO_USE_LINEAR)
+          : nullptr;
+  if (!surf) {
+    fprintf(stderr, "[ExternalTest] gbm_surface_create failed on %s\n",
+            dev_path);
+    if (gbm) gbm_device_destroy(gbm);
+    close(fd);
+    return;
+  }
+
+#ifndef EGL_PLATFORM_GBM_MESA_LOCAL
+#define EGL_PLATFORM_GBM_MESA_LOCAL 0x31D7
+#endif
+  typedef EGLDisplay(EGLAPIENTRYP GetPlatformDisplayFn)(EGLenum, void*,
+                                                        const EGLint*);
+  GetPlatformDisplayFn get_dpy =
+      (GetPlatformDisplayFn)eglGetProcAddress("eglGetPlatformDisplayEXT");
+  EGLDisplay dpy = get_dpy ? get_dpy(EGL_PLATFORM_GBM_MESA_LOCAL, gbm, nullptr)
+                           : EGL_NO_DISPLAY;
+  if (dpy == EGL_NO_DISPLAY || !eglInitialize(dpy, nullptr, nullptr)) {
+    fprintf(stderr, "[ExternalTest] EGL init failed on %s\n", dev_path);
+    return;
+  }
+  eglBindAPI(EGL_OPENGL_ES_API);
+  const EGLint cfg_attrs[] = {EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
+                              EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8,
+                              EGL_BLUE_SIZE, 8, EGL_RENDERABLE_TYPE,
+                              EGL_OPENGL_ES2_BIT, EGL_NONE};
+  EGLConfig cfgs[64];
+  EGLint n = 0;
+  eglChooseConfig(dpy, cfg_attrs, cfgs, 64, &n);
+  EGLConfig cfg = nullptr;
+  for (EGLint i = 0; i < n; i++) {
+    EGLint vid = 0;
+    eglGetConfigAttrib(dpy, cfgs[i], EGL_NATIVE_VISUAL_ID, &vid);
+    if ((uint32_t)vid == GBM_FORMAT_XRGB8888) {
+      cfg = cfgs[i];
+      break;
+    }
+  }
+  const EGLint ctx_attrs[] = {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE};
+  EGLContext ctx =
+      cfg ? eglCreateContext(dpy, cfg, EGL_NO_CONTEXT, ctx_attrs) : nullptr;
+  EGLSurface esurf =
+      ctx ? eglCreateWindowSurface(dpy, cfg, (EGLNativeWindowType)surf,
+                                   nullptr)
+          : EGL_NO_SURFACE;
+  if (esurf == EGL_NO_SURFACE ||
+      !eglMakeCurrent(dpy, esurf, esurf, ctx)) {
+    fprintf(stderr, "[ExternalTest] EGL surface/context failed on %s\n",
+            dev_path);
+    return;
+  }
+  fprintf(stderr, "[ExternalTest] producing %ux%u on %s (%s)\n", w, h,
+          dev_path, glGetString(GL_RENDERER));
+
+  static const float kBars[8][3] = {
+      {0.94f, 0.24f, 0.24f}, {0.94f, 0.76f, 0.24f}, {0.24f, 0.94f, 0.24f},
+      {0.24f, 0.76f, 0.94f}, {0.24f, 0.24f, 0.94f}, {0.94f, 0.24f, 0.76f},
+      {0.94f, 0.94f, 0.94f}, {0.06f, 0.06f, 0.06f},
+  };
+  gbm_bo* held[2] = {nullptr, nullptr};
+  uint64_t frame = 0;
+  while (view->running) {
+    if (!view->vt_active) {
+      usleep(100 * 1000);
+      continue;
+    }
+    glEnable(GL_SCISSOR_TEST);
+    const int bar_w = (int)(w / 8) + 1;
+    for (int b = 0; b < 8; b++) {
+      const float* c = kBars[(b + frame / 15) % 8];
+      glScissor(b * bar_w, 0, bar_w, (GLint)h);
+      glClearColor(c[0], c[1], c[2], 1.0f);
+      glClear(GL_COLOR_BUFFER_BIT);
+    }
+    // Orientation marker: a white band that must appear at the TOP of the
+    // panel (GL y is bottom-up; swap stores it top-down; the presenter's
+    // inverted v puts GL-top back on top).
+    glScissor(0, (GLint)h - 32, (GLint)w, 32);
+    glClearColor(1.0f, 1.0f, 1.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDisable(GL_SCISSOR_TEST);
+    eglSwapBuffers(dpy, esurf);
+
+    gbm_bo* front = gbm_surface_lock_front_buffer(surf);
+    if (!front) break;
+    int bofd = gbm_bo_get_fd(front);
+    if (bofd >= 0) {
+      fl_drm_view_push_external_frame(view, (uint32_t)out_idx, bofd,
+                                      gbm_bo_get_stride(front), 0,
+                                      GBM_FORMAT_XRGB8888, 0);
+      close(bofd);
+    }
+    // Hold the two newest; the presenter samples promptly.
+    if (held[1]) gbm_surface_release_buffer(surf, held[1]);
+    held[1] = held[0];
+    held[0] = front;
+    frame++;
+    usleep(16666);
+  }
+
+  eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+  if (held[1]) gbm_surface_release_buffer(surf, held[1]);
+  if (held[0]) gbm_surface_release_buffer(surf, held[0]);
+  eglDestroySurface(dpy, esurf);
+  eglDestroyContext(dpy, ctx);
+  gbm_surface_destroy(surf);
+  gbm_device_destroy(gbm);
+  close(fd);
+  fprintf(stderr, "[ExternalTest] producer exited\n");
+}
+
 int fl_drm_view_add_output_view(FlDrmView* view,
                                  uint32_t index,
                                  int64_t flutter_view_id,
@@ -2261,6 +2740,15 @@ int fl_drm_view_add_output_view(FlDrmView* view,
     fprintf(stderr, "[DrmView] add_output_view: output %u is disabled\n",
             index);
     return 0;
+  }
+  {
+    std::lock_guard<std::mutex> elock(view->external_mutex);
+    if (FindExternalOutput(view, index)) {
+      fprintf(stderr,
+              "[DrmView] add_output_view: output %u is externally sourced\n",
+              index);
+      return 0;
+    }
   }
   const FlDrmOutput& out = view->display.output(index);
   {
@@ -2770,6 +3258,37 @@ void fl_drm_view_run(FlDrmView* view) {
   // Start platform thread (epoll loop for input + engine platform tasks).
   pthread_create(&view->platform_thread, nullptr, PlatformThreadEntry, view);
 
+  // FLUTTER_DRM_EXTERNAL_TEST=<output index>: mark that output externally
+  // sourced and feed it from an in-process producer rendering on
+  // FLUTTER_DRM_EXTERNAL_TEST_DEVICE (default /dev/dri/renderD128) — the
+  // Stage A analogue of FLUTTER_DRM_SECONDARY_TEST. Proves the imported-view
+  // path end-to-end (cross-GPU render, EGLImage import, fullscreen draw,
+  // per-CRTC flip) without a per-screen shell. The shell must skip AddView
+  // for the chosen output (syncEngineViewsAndLayout reads the same env).
+  const char* external_test = getenv("FLUTTER_DRM_EXTERNAL_TEST");
+  if (external_test && external_test[0]) {
+    size_t idx = (size_t)atoi(external_test);
+    if (idx >= view->display.num_outputs() ||
+        idx == view->display.primary_index() ||
+        !view->output_resources[idx].chain) {
+      idx = SIZE_MAX;
+      for (size_t i = 0; i < view->display.num_outputs(); i++) {
+        if (i != view->display.primary_index() &&
+            view->output_resources[i].chain) {
+          idx = i;
+          break;
+        }
+      }
+    }
+    if (idx != SIZE_MAX &&
+        fl_drm_view_set_output_external(view, (uint32_t)idx, 1)) {
+      view->secondary_test_threads.emplace_back(
+          [view, idx]() { ExternalTestProducer(view, idx); });
+      fprintf(stderr, "[DrmView] External test producer started for %s\n",
+              view->display.output(idx).name);
+    }
+  }
+
   // FLUTTER_DRM_SECONDARY_TEST: drive each secondary output with a color
   // cycle from its own thread/context. Exercises the multi-CRTC flip demux
   // end-to-end (each thread's Present() only advances when ITS flips land)
@@ -2903,6 +3422,28 @@ void fl_drm_view_run(FlDrmView* view) {
       res.chain->AbortFlipWait();
     }
   }
+  // Stop external-output presenters (their producers are among the test
+  // threads joined below; running is already false, so producers exit on
+  // their own and late pushes fall into stopped entries and are dropped).
+  {
+    std::lock_guard<std::mutex> elock(view->external_mutex);
+    for (auto& ext : view->external_outputs) {
+      {
+        std::lock_guard<std::mutex> lk(ext->mu);
+        ext->stop = true;
+        if (ext->pending_fd >= 0) {
+          close(ext->pending_fd);
+          ext->pending_fd = -1;
+          ext->has_pending = false;
+        }
+      }
+      ext->cv.notify_all();
+    }
+  }
+  for (auto& ext : view->external_outputs) {
+    if (ext->thread.joinable()) ext->thread.join();
+  }
+
   for (auto& t : view->secondary_test_threads) {
     t.join();
   }
