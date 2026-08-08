@@ -2568,6 +2568,14 @@ int fl_drm_view_set_output_external(FlDrmView* view,
       [](int output, int phase, double x, double y, int64_t buttons,
          double sdx, double sdy, void* user) {
         FlDrmView* v = static_cast<FlDrmView*>(user);
+        static const bool dbg = [] {
+          const char* e = getenv("STARLING_SWAPCHAIN_DEBUG");
+          return e && e[0] == '1';
+        }();
+        if (dbg && (phase == 1 || phase == 2)) {
+          fprintf(stderr, "[ExtInput] out=%d phase=%d phys=(%.1f,%.1f)\n",
+                  output, phase, x, y);
+        }
         if (v->external_input_cb) {
           v->external_input_cb((uint32_t)output, phase, x, y, buttons, sdx,
                                sdy, v->external_input_user);
