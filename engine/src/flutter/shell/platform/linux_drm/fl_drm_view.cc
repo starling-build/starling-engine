@@ -207,20 +207,37 @@ static void InitGCDIntegration() {
 
 // The scale to render the primary at when FLUTTER_DRM_DPI does not say.
 //
-// Integer scales only. A fractional scale cannot land text stems on the pixel
-// grid and reads as blurry — a 1.7 default shipped once and was a crispness
-// regression.
+// Fractional scales are first-class here. They were integer-only for a stretch
+// on the belief that a fractional device pixel ratio cannot land text stems on
+// the pixel grid and reads as blurry; that is not what the renderer does. Text
+// is rasterised at the device pixel ratio, so a 1.5 scale rasterises glyphs at
+// 1.5 and lands hard-edged 1-2px stems — it is not a 2x render resampled down,
+// which is the thing that would actually smear. Screenshots at 1.5 magnified
+// 6x show the same crisp stems and LCD subpixel fringing as 2.0. The 1.7
+// default that shipped in Apr 2026 and was reverted in Jul 2026 was reverted
+// on that mistaken reading.
 //
-// With EDID the panel's real pixel density decides, and 150 dpi is a clean
-// divide: a 24" 1080p desktop panel is ~92, a 27" 4K one ~163, a 13" 2560x1600
-// laptop ~227. Without EDID the connector reports 0 mm and the pixel count is
-// all there is, so only a 4K-class mode earns 2x — which is what keeps a
-// 1280x800 virtual display (no EDID, every VM) from rendering at half its
-// resolution.
+// With EDID the panel's real pixel density decides. Divide by a ~110 dpi
+// logical reference — what a "1x" desktop display works out at, and what keeps
+// physical text size roughly constant across panels — then snap to the same
+// 0.25 steps the Settings scale slider offers, so a derived scale is always
+// one the user can dial back to by hand. That gives 1.0 for a 24" 1080p
+// desktop panel (~92 dpi), 1.5 for a 27" 4K one (~163), 1.25 for a 15.6" 1080p
+// laptop (~141), and 2.0 for a 13" 2560x1600 laptop (~227).
+//
+// Without EDID the connector reports 0 mm and the pixel count is all there is.
+// That carries no density information to be fractional about, so it keeps the
+// coarse rule: only a 4K-class mode earns 2x, which is what keeps a 1280x800
+// virtual display (no EDID, every VM) from rendering at half its resolution.
 static double DeriveScale(const flutter::FlDrmOutput& out) {
+  static constexpr double kLogicalDpi = 110.0;
   if (out.mm_width > 0 && out.mm_height > 0) {
     const double dpi = out.width() * 25.4 / static_cast<double>(out.mm_width);
-    return dpi >= 150.0 ? 2.0 : 1.0;
+    const double quarters = dpi / kLogicalDpi * 4.0;
+    double scale = static_cast<int>(quarters + 0.5) / 4.0;
+    if (scale < 1.0) scale = 1.0;
+    if (scale > 3.0) scale = 3.0;
+    return scale;
   }
   return out.width() >= 3200 ? 2.0 : 1.0;
 }
