@@ -121,6 +121,27 @@ class SwiftFontCollectionManager {
   sk_sp<txt::DynamicFontManager> dynamic_font_manager_;
 };
 
+/// The dynamic font manager installed in the *engine's* font collection —
+/// the one ParagraphBuilder resolves families through, and therefore the one
+/// that decides what every widget is measured and painted with.
+///
+/// It has to outlive a single LoadFontFromList call. `SetDynamicFontManager`
+/// is one slot, not a list, so minting a fresh manager per font and setting
+/// it dropped every font registered before this one: an app loading a regular
+/// and a bold face kept only the bold, and one loading four faces across two
+/// families kept only the last. The family the app actually asked for then
+/// resolved to nothing.
+///
+/// That failure is near-silent. A style carrying a `fontFamilyFallback` that
+/// happens to name the surviving family still paints — in the wrong face, at
+/// the wrong weight — while a style *without* a fallback (a TextPainter used
+/// to measure a monospace cell, say) falls through to the platform's default
+/// proportional font and comes back a wildly different width. Rendering looks
+/// plausible and the metrics do not agree with it.
+std::mutex g_engine_font_mutex;
+sk_sp<txt::DynamicFontManager> g_engine_dynamic_fonts;
+const txt::FontCollection* g_engine_fonts_owner = nullptr;
+
 }  // namespace
 
 bool LoadFontFromList(const uint8_t* data,
@@ -140,12 +161,24 @@ bool LoadFontFromList(const uint8_t* data,
       if (mgr) {
         sk_sp<SkTypeface> face = mgr->makeFromStream(std::move(stream));
         if (face) {
-          auto dyn = sk_make_sp<txt::DynamicFontManager>();
+          std::lock_guard<std::mutex> lock(g_engine_font_mutex);
+          // Install one manager per collection and keep registering into it.
+          // The provider accumulates (family -> style set), so successive
+          // calls add faces instead of replacing them, and weights within a
+          // family stay distinguishable.
+          if (!g_engine_dynamic_fonts ||
+              g_engine_fonts_owner != engine_fc.get()) {
+            g_engine_dynamic_fonts = sk_make_sp<txt::DynamicFontManager>();
+            g_engine_fonts_owner = engine_fc.get();
+            engine_fc->SetDynamicFontManager(g_engine_dynamic_fonts);
+          }
           if (family_str.empty())
-            dyn->font_provider().RegisterTypeface(face);
+            g_engine_dynamic_fonts->font_provider().RegisterTypeface(face);
           else
-            dyn->font_provider().RegisterTypeface(face, family_str);
-          engine_fc->SetDynamicFontManager(dyn);
+            g_engine_dynamic_fonts->font_provider().RegisterTypeface(
+                face, family_str);
+          // Rebuilds the resolved-family cache so the face just added is
+          // visible to the next layout.
           engine_fc->ClearFontFamilyCache();
         }
       }
