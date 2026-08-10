@@ -513,14 +513,6 @@ void FlDrmInput::SendPointerEvent(FlutterPointerPhase phase,
   double x = (vx_ - r.logical_x) * r.scale;
   double y = (vy_ - r.logical_y) * r.scale;
 
-  if (r.external_output >= 0) {
-    if (external_router_) {
-      external_router_(r.external_output, (int)phase, x, y, buttons,
-                       scroll_delta_x, scroll_delta_y, external_router_user_);
-    }
-    return;
-  }
-
   FlutterPointerEvent event = {};
   event.struct_size = sizeof(event);
   event.phase = phase;
