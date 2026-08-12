@@ -247,8 +247,20 @@ shared_library("swift_bridge") {
   # executable (which links the swift_bridge_engine_registry source_set via
   # //flutter/shell/common). This avoids duplicate statics between the dylib
   # and executable.
+  #
+  # The install name has to be set here. //build/toolchain/mac's solink rule
+  # passes no -install_name at all, so ld64 falls back to the -o path — which
+  # is "./libswift_bridge.dylib", relative to the *working directory*. A
+  # consumer then links fine and dies at launch unless it happens to be run
+  # from this out directory, and an -rpath does not help: rpath is only
+  # consulted for an @rpath-prefixed load path. FlutterMacOS.framework sets
+  # its own for the same reason (shell/platform/darwin/macos/BUILD.gn).
   if (is_mac || is_ios) {
-    ldflags = [ "-undefined", "dynamic_lookup" ]
+    ldflags = [
+      "-undefined",
+      "dynamic_lookup",
+      "-Wl,-install_name,@rpath/libswift_bridge.dylib",
+    ]
   }
   if (is_linux) {
     # Applied via config so it comes AFTER the default -z,defs from

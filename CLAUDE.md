@@ -122,7 +122,23 @@ stable C API, so **an engine rebuild needs no shell relink**.
   display). Callers must forward optional vars only when non-empty.
 - The macOS-only GN target `build_swift_demo` (`shell/common/BUILD.gn`) expects
   a `flutter_swift/` directory two levels above the GN root; that code now lives
-  in starling-desktop as `sdk/`. Linux builds never evaluate it.
+  in starling-desktop as `sdk/`, and one of its declared `inputs`
+  (`BlueScreenSetup.swift`) no longer exists at all. Linux builds never
+  evaluate it. A **macOS `gn gen` does** evaluate it and succeeds — GN does not
+  check that `inputs` exist — so the breakage is deferred to `ninja`, and only
+  if something actually asks for `blue_screen_demo`. Name the targets you want
+  and it stays dormant; it is dead code awaiting removal.
+- **A mac `shared_library` gets no `-install_name`, and `-rpath` cannot save
+  it.** `//build/toolchain/mac`'s `solink` rule passes no `-install_name`, so
+  ld64 falls back to the `-o` path — for `libswift_bridge.dylib` that is
+  `./libswift_bridge.dylib`, a path relative to the *working directory*. A
+  consumer links cleanly and then dies at launch with
+  `Library not loaded: libswift_bridge.dylib` unless it happens to run from
+  the out directory, and adding an `-rpath` does nothing, because rpath is
+  only consulted for an `@rpath`-prefixed load path. Any new mac
+  `shared_library` here has to set its own, the way `swift_bridge` and
+  `FlutterMacOS.framework` both now do. Linux never shows this: `-soname`
+  defaults to the `-o` basename and `-rpath` then resolves it.
 
 ## Standing directions
 
