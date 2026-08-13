@@ -14,7 +14,10 @@
 #include "flutter/fml/message_loop.h"
 #include "flutter/fml/platform/darwin/platform_version.h"
 #include "flutter/fml/trace_event.h"
+#include "flutter/lib/ui/swift/include/swift_runtime_callbacks.h"
+#include "flutter/lib/ui/swift/include/swift_runtime_controller.h"
 #include "flutter/runtime/ptrace_check.h"
+#include "flutter/runtime/runtime_controller_interface.h"
 #include "flutter/shell/common/engine.h"
 #include "flutter/shell/common/platform_view.h"
 #include "flutter/shell/common/shell.h"
@@ -855,6 +858,25 @@ static void SetEntryPoint(flutter::Settings* settings, NSString* entrypoint, NSS
 - (BOOL)createShell:(NSString*)entrypoint
          libraryURI:(NSString*)libraryURI
        initialRoute:(NSString*)initialRoute {
+  return [self createShell:entrypoint
+                libraryURI:libraryURI
+              initialRoute:initialRoute
+         runtimeController:nullptr];
+}
+
+// The one shell-creation path, for both runtimes. A null runtimeController is
+// the Dart engine — Shell::Create spins up a DartRuntimeController of its own;
+// a non-null one is Swift mode, and Shell::CreateSwift takes it as given and
+// never touches the VM. Everything either runtime needs from this method —
+// the thread host, the platform view and rasterizer callbacks, the task
+// runners, the background-GPU check — is identical, which is why this is one
+// method with one branch at the bottom rather than two that must be kept in
+// step. (The macOS framework pays exactly that cost: its runSwift... is a
+// copy of its Dart sibling, and the two have already drifted.)
+- (BOOL)createShell:(NSString*)entrypoint
+         libraryURI:(NSString*)libraryURI
+       initialRoute:(NSString*)initialRoute
+  runtimeController:(std::unique_ptr<flutter::RuntimeControllerInterface>)runtimeController {
   if (_shell != nullptr) {
     [FlutterLogger logWarning:@"This FlutterEngine was already invoked."];
     return NO;
@@ -918,13 +940,22 @@ static void SetEntryPoint(flutter::Settings* settings, NSString* entrypoint, NSS
                                      UIApplicationStateBackground;
 
   // Create the shell. This is a blocking operation.
-  std::unique_ptr<flutter::Shell> shell = flutter::Shell::Create(
-      /*platform_data=*/platformData,
-      /*task_runners=*/task_runners,
-      /*settings=*/settings,
-      /*on_create_platform_view=*/on_create_platform_view,
-      /*on_create_rasterizer=*/on_create_rasterizer,
-      /*is_gpu_disabled=*/_isGpuDisabled);
+  std::unique_ptr<flutter::Shell> shell =
+      runtimeController ? flutter::Shell::CreateSwift(
+                              /*platform_data=*/platformData,
+                              /*task_runners=*/task_runners,
+                              /*settings=*/settings,
+                              /*on_create_platform_view=*/on_create_platform_view,
+                              /*on_create_rasterizer=*/on_create_rasterizer,
+                              /*runtime_controller=*/std::move(runtimeController),
+                              /*is_gpu_disabled=*/_isGpuDisabled)
+                        : flutter::Shell::Create(
+                              /*platform_data=*/platformData,
+                              /*task_runners=*/task_runners,
+                              /*settings=*/settings,
+                              /*on_create_platform_view=*/on_create_platform_view,
+                              /*on_create_rasterizer=*/on_create_rasterizer,
+                              /*is_gpu_disabled=*/_isGpuDisabled);
 
   if (shell == nullptr) {
     NSString* errorMessage = [NSString
@@ -939,6 +970,29 @@ static void SetEntryPoint(flutter::Settings* settings, NSString* entrypoint, NSS
   }
 
   return _shell != nullptr;
+}
+
+- (BOOL)runSwiftWithRuntimeCallbacks:(const void*)runtimeCallbacks {
+  if (runtimeCallbacks == nullptr) {
+    [FlutterLogger logError:@"runSwiftWithRuntimeCallbacks: was given no callback table."];
+    return NO;
+  }
+
+  // The table is copied here — SwiftRuntimeController takes it by value — so
+  // the caller may free its own copy the moment this returns. It does not, as
+  // it happens (the Swift hosts heap-allocate one for the process lifetime),
+  // but the contract is worth keeping the same as macOS's.
+  auto controller = std::make_unique<flutter::SwiftRuntimeController>(
+      *reinterpret_cast<const SwiftRuntimeCallbacks*>(runtimeCallbacks));
+
+  // No entrypoint and no library: SetEntryPoint only fills in the advisory
+  // strings a profiler labels its timeline with, and "main"/"main.dart" is as
+  // true of a Swift app as of a Dart one. The initial route is the default
+  // for the same reason — Navigator reads it, and Navigator is ported.
+  return [self createShell:FlutterDefaultDartEntrypoint
+                libraryURI:nil
+              initialRoute:FlutterDefaultInitialRoute
+         runtimeController:std::move(controller)];
 }
 
 - (BOOL)performImplicitEngineCallback {

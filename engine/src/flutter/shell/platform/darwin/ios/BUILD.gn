@@ -198,6 +198,13 @@ source_set("flutter_framework_source") {
     "//flutter/common/graphics",
     "//flutter/fml",
     "//flutter/lib/ui",
+
+    # Swift mode (runSwiftWithRuntimeCallbacks:). shell/common already pulls
+    # this in, but the framework names the header directly, so it names the
+    # target directly too — that is what carries swift_bridge_config's
+    # visibility defines onto these translation units rather than leaving them
+    # to arrive by accident through another target's dependency.
+    "//flutter/lib/ui/swift:swift_runtime_controller",
     "//flutter/runtime",
     "//flutter/shell/common",
     "//flutter/shell/platform/common:common_cpp_input",

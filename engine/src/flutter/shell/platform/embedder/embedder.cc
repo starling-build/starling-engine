@@ -2556,9 +2556,19 @@ FlutterEngineResult FlutterEngineInitializeSwift(
 
   // Default to Impeller for Swift mode, but allow the embedder to override
   // via command-line flags (e.g. --enable-impeller=false for software renderer).
+  //
+  // Not on iOS or under SLIMPELLER, where Settings::enable_impeller is a
+  // `static constexpr const bool` rather than a field: Impeller is the only
+  // renderer those builds have, so there is nothing to select and the
+  // assignment does not compile. The guard has to match settings.h's own
+  // condition exactly — this file is compiled into the iOS framework
+  // (embedder_as_internal_library) even though nothing on iOS calls this
+  // function, so "unreachable there" is not enough to keep it building.
+#if !(FML_OS_IOS || FML_OS_IOS_SIMULATOR || SLIMPELLER)
   if (!command_line.HasOption("enable-impeller")) {
     settings.enable_impeller = true;
   }
+#endif
 
   // Wire up log callback.
   if (SAFE_ACCESS(args, log_message_callback, nullptr) != nullptr) {
