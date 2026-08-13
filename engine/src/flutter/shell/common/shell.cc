@@ -29,6 +29,7 @@
 #include "flutter/fml/trace_event.h"
 #include "flutter/runtime/dart_vm.h"
 #include "flutter/shell/common/base64.h"
+#include "flutter/lib/ui/painting/display_list_deferred_image_gpu_impeller.h"
 #include "flutter/lib/ui/swift/include/swift_bridge_engine_registry.h"
 #include "flutter/shell/common/engine.h"
 #include "flutter/shell/common/skia_event_tracer_impl.h"
@@ -714,6 +715,14 @@ std::unique_ptr<Shell> Shell::CreateShellOnPlatformThreadSwift(
   std::promise<std::unique_ptr<Rasterizer>> rasterizer_promise;
   auto rasterizer_future = rasterizer_promise.get_future();
 
+  // The rasteriser is also the SnapshotDelegate, which is what lets
+  // PictureBridge::ToImage rasterise a display list the way this shell draws
+  // rather than always through Skia. The Dart factory takes the same handle
+  // out at the same point and for the same reason.
+  std::promise<fml::TaskRunnerAffineWeakPtr<SnapshotDelegate>>
+      snapshot_delegate_promise;
+  auto snapshot_delegate_future = snapshot_delegate_promise.get_future();
+
   std::promise<std::shared_ptr<impeller::Context>> impeller_context_promise;
   auto impeller_context_future =
       std::make_shared<impeller::ImpellerContextFuture>(
@@ -724,12 +733,14 @@ std::unique_ptr<Shell> Shell::CreateShellOnPlatformThreadSwift(
   fml::TaskRunner::RunNowOrPostTask(
       task_runners.GetRasterTaskRunner(),
       [&rasterizer_promise,  //
+       &snapshot_delegate_promise,
        impeller_context_future,
        on_create_rasterizer,  //
        shell = shell.get()]() {
         TRACE_EVENT0("flutter", "ShellSetupGPUSubsystem");
         std::unique_ptr<Rasterizer> rasterizer(on_create_rasterizer(*shell));
         rasterizer->SetImpellerContext(impeller_context_future);
+        snapshot_delegate_promise.set_value(rasterizer->GetSnapshotDelegate());
         rasterizer_promise.set_value(std::move(rasterizer));
       });
 
@@ -805,6 +816,7 @@ std::unique_ptr<Shell> Shell::CreateShellOnPlatformThreadSwift(
            &dispatcher_maker,                                      //
            vsync_waiter = std::move(vsync_waiter),                 //
            &weak_io_manager_future,                                //
+           &snapshot_delegate_future,                              //
            runtime_controller = std::move(runtime_controller)      //
       ]() mutable {
             TRACE_EVENT0("flutter", "ShellSetupUISubsystem");
@@ -852,6 +864,68 @@ std::unique_ptr<Shell> Shell::CreateShellOnPlatformThreadSwift(
             // learns the same way and for the same reason.
             swift_bridge::SwiftBridgeEngineRegistry::SetImpellerEnabled(
                 shell->GetSettings().enable_impeller);
+
+            // How to turn a Picture into an Image on THIS rasteriser. Only
+            // Impeller is answered here; returning null for Skia leaves the
+            // bridge on its own raster-SkSurface path, which is what every
+            // Skia host has always used and is correct there.
+            //
+            // SYNCHRONOUS deliberately, not the deferred image Dart's
+            // toImageSync hands out. The deferred machinery exists so a Dart
+            // isolate never blocks on the raster thread, and the price is an
+            // image whose texture fills in later. The one caller on this side
+            // is the terminal's glyph atlas, which draws FROM the image in
+            // the same frame that built it — with rects computed against the
+            // layout the image is only converging on. That skew was visible:
+            // glyphs sighted later live in later atlas rows, so each row
+            // sampled a little more wrongly than the one above it. A blocked
+            // UI thread is the lesser cost, it is rare (the atlas rebuilds
+            // only on newly sighted glyphs), and it is the contract ToImage
+            // always had.
+            {
+              auto snapshot_delegate = snapshot_delegate_future.get();
+              auto raster_task_runner = task_runners.GetRasterTaskRunner();
+              const bool impeller = shell->GetSettings().enable_impeller;
+              swift_bridge::SwiftBridgeEngineRegistry::SetSnapshotCallback(
+                  [snapshot_delegate, raster_task_runner, impeller](
+                      const void* dl, int width, int height) -> void* {
+                    if (!impeller || dl == nullptr || width <= 0 ||
+                        height <= 0) {
+                      return nullptr;
+                    }
+                    const auto& display_list =
+                        *static_cast<const sk_sp<DisplayList>*>(dl);
+                    if (!display_list) {
+                      return nullptr;
+                    }
+                    // The delegate is raster-thread-affine — a weak pointer
+                    // that may only be dereferenced there. Hop and wait;
+                    // called on the raster thread itself, just run.
+                    sk_sp<DlImage> image;
+                    auto snapshot = [&image, &snapshot_delegate, &display_list,
+                                     width, height]() {
+                      if (snapshot_delegate) {
+                        image = snapshot_delegate->MakeRasterSnapshotSync(
+                            display_list, DlISize(width, height));
+                      }
+                    };
+                    if (raster_task_runner->RunsTasksOnCurrentThread()) {
+                      snapshot();
+                    } else {
+                      fml::AutoResetWaitableEvent latch;
+                      fml::TaskRunner::RunNowOrPostTask(
+                          raster_task_runner, [&latch, &snapshot]() {
+                            snapshot();
+                            latch.Signal();
+                          });
+                      latch.Wait();
+                    }
+                    if (image) {
+                      return new sk_sp<DlImage>(std::move(image));
+                    }
+                    return nullptr;
+                  });
+            }
 
             // Wire up SwiftBridgeEngineRegistry callbacks so that Swift bridge
             // functions (RenderView, ScheduleFrame) can reach the engine.

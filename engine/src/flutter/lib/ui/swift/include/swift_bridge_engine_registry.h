@@ -144,6 +144,44 @@ class FLUTTER_SWIFT_BRIDGE_EXPORT SwiftBridgeEngineRegistry {
   /// Whether Impeller is in use (default: false).
   static bool GetImpellerEnabled();
 
+  /// Rasterises a DisplayList into an image, the way the rasteriser in use
+  /// actually rasterises.
+  ///
+  /// `PictureBridge::ToImage` cannot do this itself. Left to its own devices
+  /// it replays the display list onto a raster SkSurface through
+  /// DlSkCanvasDispatcher, which is correct only where Skia draws the frame
+  /// too. Under Impeller a paragraph's text carries an Impeller TextFrame and
+  /// no Skia blob, so that dispatcher's
+  ///   FML_CHECK(blob) << "Impeller DlText cannot be drawn to a Skia canvas."
+  /// aborts the process — the terminal's glyph atlas hit exactly this on iOS,
+  /// dying on its first paint.
+  ///
+  /// The engine already knows how to do this correctly for either backend
+  /// (`CreateDeferredImage` in lib/ui/painting/picture.cc, which is what
+  /// Dart's `Picture.toImageSync` uses). That code lives above the bridge and
+  /// must stay there — not depending on //flutter/lib/ui or //flutter/runtime
+  /// is the reason this registry exists — so the shell binds it here and the
+  /// bridge just calls it.
+  ///
+  /// Deliberately opaque in both directions, like SetFontCollection above:
+  ///   in  — `const sk_sp<flutter::DisplayList>*`
+  ///   out — a NEW `sk_sp<flutter::DlImage>*`, ownership passing to the
+  ///         caller, or nullptr if the snapshot could not be made.
+  ///
+  /// The image comes back DEFERRED: the raster happens on the raster thread,
+  /// before anything can sample it. That is the same contract Dart's
+  /// toImageSync has, and it is why this can be synchronous here.
+  using SnapshotCallback =
+      std::function<void*(const void* display_list, int width, int height)>;
+
+  /// Sets the snapshot callback. Left unset — every host that predates this,
+  /// and any embedder that never wires it — the bridge keeps its Skia path,
+  /// which is what those hosts were already using.
+  static void SetSnapshotCallback(SnapshotCallback callback);
+
+  /// Returns the registered snapshot callback, or an empty function.
+  static const SnapshotCallback& GetSnapshotCallback();
+
   /// Clears all registered callbacks and resets device pixel ratio.
   ///
   /// Should be called during engine teardown.
@@ -155,6 +193,7 @@ class FLUTTER_SWIFT_BRIDGE_EXPORT SwiftBridgeEngineRegistry {
 
   static RenderCallback render_callback_;
   static ScheduleFrameCallback schedule_frame_callback_;
+  static SnapshotCallback snapshot_callback_;
   static float device_pixel_ratio_;
   static bool frame_rendered_;
   static bool impeller_enabled_;
