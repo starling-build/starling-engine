@@ -389,8 +389,14 @@ ParagraphBuilderBridge::ParagraphBuilderBridge(
   // during engine initialization.
   auto font_collection = GetFontCollection();
   if (font_collection) {
+    // Not a constant: it decides whether each laid-out blob is also converted
+    // to an Impeller TextFrame, and the rasteriser that receives the display
+    // list requires exactly one of the two. It was `false` while every Swift
+    // host rendered through Skia; iOS has no Skia backend to fall back to, so
+    // the shell now reports what it actually built.
     auto builder = txt::ParagraphBuilder::CreateSkiaBuilder(
-        style, font_collection, /*impeller_enabled=*/false);
+        style, font_collection,
+        /*impeller_enabled=*/SwiftBridgeEngineRegistry::GetImpellerEnabled());
     if (!builder) {
       FML_LOG(ERROR) << "ParagraphBuilderBridge: CreateSkiaBuilder returned "
                         "null; text will not lay out.";

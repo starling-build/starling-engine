@@ -122,6 +122,28 @@ class FLUTTER_SWIFT_BRIDGE_EXPORT SwiftBridgeEngineRegistry {
   /// Returns nullptr if no font collection is set.
   static void* GetFontCollection();
 
+  /// Whether this engine rasterises with Impeller rather than Skia.
+  ///
+  /// It changes what a paragraph must emit, which is why the bridge needs to
+  /// know: with Impeller the text in a display list has to carry an Impeller
+  /// TextFrame (paragraph_skia.cc builds one per blob), and the Impeller
+  /// dispatcher FML_CHECKs on its absence — an abort on the raster thread,
+  /// with the app dying a frame after a launch that looked clean. With Skia
+  /// the blob alone is right and building frames would be waste.
+  ///
+  /// The bridge cannot ask flutter::Settings itself: it deliberately does not
+  /// depend on //flutter/runtime, which is the whole reason this registry
+  /// exists. So the shell sets it where it reads the settings, the same way
+  /// it sets everything else here.
+  ///
+  /// Defaults to false, which is right for every host that forces Skia
+  /// (Linux DRM, GTK, Win32, Cocoa) and wrong only where it is set — iOS,
+  /// where Impeller is not optional at all.
+  static void SetImpellerEnabled(bool enabled);
+
+  /// Whether Impeller is in use (default: false).
+  static bool GetImpellerEnabled();
+
   /// Clears all registered callbacks and resets device pixel ratio.
   ///
   /// Should be called during engine teardown.
@@ -135,6 +157,7 @@ class FLUTTER_SWIFT_BRIDGE_EXPORT SwiftBridgeEngineRegistry {
   static ScheduleFrameCallback schedule_frame_callback_;
   static float device_pixel_ratio_;
   static bool frame_rendered_;
+  static bool impeller_enabled_;
   // Opaque storage for std::shared_ptr<txt::FontCollection>.
   // We store it as raw bytes to avoid including txt headers in this header.
   static void* font_collection_storage_;

@@ -843,6 +843,16 @@ std::unique_ptr<Shell> Shell::CreateShellOnPlatformThreadSwift(
               swift_bridge::SwiftBridgeEngineRegistry::SetFontCollection(&txt_fc);
             }
 
+            // Which rasteriser this shell built, so the paragraph builder can
+            // emit text the dispatcher will accept. Impeller's requires an
+            // Impeller TextFrame per blob and FML_CHECKs without one; Skia's
+            // wants the blob alone. The bridge cannot read Settings itself —
+            // not depending on //flutter/runtime is the point of the registry
+            // — so it is told here, beside the font collection, which it
+            // learns the same way and for the same reason.
+            swift_bridge::SwiftBridgeEngineRegistry::SetImpellerEnabled(
+                shell->GetSettings().enable_impeller);
+
             // Wire up SwiftBridgeEngineRegistry callbacks so that Swift bridge
             // functions (RenderView, ScheduleFrame) can reach the engine.
             // We cast to RuntimeDelegate* to access Render(), which Engine

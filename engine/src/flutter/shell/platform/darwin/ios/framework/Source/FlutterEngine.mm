@@ -882,6 +882,10 @@ static void SetEntryPoint(flutter::Settings* settings, NSString* entrypoint, NSS
     return NO;
   }
 
+  // Read before the unique_ptr is moved from, and it is what the two
+  // Dart-only steps at the bottom are gated on.
+  const BOOL swiftMode = runtimeController != nullptr;
+
   self.initialRoute = initialRoute;
 
   auto settings = [self.dartProject settings];
@@ -962,9 +966,16 @@ static void SetEntryPoint(flutter::Settings* settings, NSString* entrypoint, NSS
         stringWithFormat:@"Could not start a shell FlutterEngine with entrypoint: %@", entrypoint];
     [FlutterLogger logError:errorMessage];
   } else {
+    // Both of the following are Dart VM services, and Swift mode has no VM to
+    // serve. The profiler is not merely useless there but fatal: Start() ends
+    // in UpdateDartVMServiceThreadName(), which posts Dart_SetThreadName onto
+    // the profiler thread, and that call into an uninitialized VM segfaults —
+    // on a thread with nothing of ours on its stack, moments after a launch
+    // that otherwise looked clean. (It reads as "the app opens and closes
+    // again", because SpringBoard is all that is left to see.)
     [self setUpShell:std::move(shell)
-        withVMServicePublication:settings.enable_vm_service_publication];
-    if ([FlutterEngine isProfilerEnabled]) {
+        withVMServicePublication:!swiftMode && settings.enable_vm_service_publication];
+    if ([FlutterEngine isProfilerEnabled] && !swiftMode) {
       [self startProfiler];
     }
   }

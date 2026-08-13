@@ -21,6 +21,7 @@ SwiftBridgeEngineRegistry::ScheduleFrameCallback
     SwiftBridgeEngineRegistry::schedule_frame_callback_;
 float SwiftBridgeEngineRegistry::device_pixel_ratio_ = 1.0f;
 bool SwiftBridgeEngineRegistry::frame_rendered_ = false;
+bool SwiftBridgeEngineRegistry::impeller_enabled_ = false;
 void* SwiftBridgeEngineRegistry::font_collection_storage_ = nullptr;
 
 void SwiftBridgeEngineRegistry::SetRenderCallback(RenderCallback callback) {
@@ -81,11 +82,20 @@ void* SwiftBridgeEngineRegistry::GetFontCollection() {
   return font_collection_storage_;
 }
 
+void SwiftBridgeEngineRegistry::SetImpellerEnabled(bool enabled) {
+  impeller_enabled_ = enabled;
+}
+
+bool SwiftBridgeEngineRegistry::GetImpellerEnabled() {
+  return impeller_enabled_;
+}
+
 void SwiftBridgeEngineRegistry::Reset() {
   render_callback_ = nullptr;
   schedule_frame_callback_ = nullptr;
   device_pixel_ratio_ = 1.0f;
   frame_rendered_ = false;
+  impeller_enabled_ = false;
   if (font_collection_storage_) {
     delete static_cast<std::shared_ptr<txt::FontCollection>*>(
         font_collection_storage_);
