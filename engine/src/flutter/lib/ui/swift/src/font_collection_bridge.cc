@@ -6,6 +6,7 @@
 #include "include/swift_bridge_engine_registry.h"
 
 // Flutter engine headers (only in .cc file)
+#include "third_party/skia/include/core/SkData.h"
 #include "third_party/skia/include/core/SkFontMgr.h"
 #include "third_party/skia/include/core/SkStream.h"
 #include "third_party/skia/include/core/SkTypeface.h"
@@ -37,40 +38,18 @@ class SwiftFontCollectionManager {
     return instance;
   }
 
-  /// Loads a font from memory data.
-  ///
-  /// @param data Pointer to font data
-  /// @param length Length of font data in bytes
-  /// @param family_name Optional family name override (empty string = use
-  /// font's name)
-  /// @return True if the font was loaded successfully
-  bool LoadFont(const uint8_t* data,
-                size_t length,
-                const std::string& family_name) {
-    if (data == nullptr || length == 0) {
+  /// Registers an already-created typeface. The caller makes ONE typeface
+  /// (over one SkData) and hands the same sk_sp here and to the engine's
+  /// collection — a typeface carries its bytes with it, so sharing the face
+  /// is what keeps a font's data in memory once rather than per-collection.
+  bool RegisterFace(const sk_sp<SkTypeface>& typeface,
+                    const std::string& family_name) {
+    if (!typeface) {
       return false;
     }
 
     std::lock_guard<std::mutex> lock(mutex_);
 
-    // Create a memory stream from the font data (copies the data)
-    auto font_stream =
-        std::make_unique<SkMemoryStream>(data, length, true /* copyData */);
-
-    // Get the default font manager to create a typeface
-    sk_sp<SkFontMgr> font_mgr = txt::GetDefaultFontManager();
-    if (!font_mgr) {
-      return false;
-    }
-
-    // Create a typeface from the font data
-    sk_sp<SkTypeface> typeface =
-        font_mgr->makeFromStream(std::move(font_stream));
-    if (!typeface) {
-      return false;
-    }
-
-    // Register the typeface with our dynamic font manager
     if (family_name.empty()) {
       dynamic_font_manager_->font_provider().RegisterTypeface(typeface);
     } else {
@@ -142,52 +121,72 @@ std::mutex g_engine_font_mutex;
 sk_sp<txt::DynamicFontManager> g_engine_dynamic_fonts;
 const txt::FontCollection* g_engine_fonts_owner = nullptr;
 
+/// One typeface into every collection that resolves families: the engine's
+/// (ParagraphBuilder) and the standalone manager (measurement and tests that
+/// run before an engine exists). The same sk_sp goes to both — this used to
+/// build a separate SkMemoryStream(copy=true) per collection, so every
+/// font's bytes sat in anonymous RSS once per registration; the terminal's
+/// CJK fallback alone was 2x19.5 MB of the app's footprint.
+bool RegisterFaceEverywhere(const sk_sp<SkTypeface>& face,
+                            const std::string& family_str) {
+  if (!face) return false;
+
+  void* engine_fc_ptr = SwiftBridgeEngineRegistry::GetFontCollection();
+  if (engine_fc_ptr) {
+    auto& engine_fc =
+        *static_cast<std::shared_ptr<txt::FontCollection>*>(engine_fc_ptr);
+    if (engine_fc) {
+      std::lock_guard<std::mutex> lock(g_engine_font_mutex);
+      // Install one manager per collection and keep registering into it.
+      // The provider accumulates (family -> style set), so successive
+      // calls add faces instead of replacing them, and weights within a
+      // family stay distinguishable.
+      if (!g_engine_dynamic_fonts || g_engine_fonts_owner != engine_fc.get()) {
+        g_engine_dynamic_fonts = sk_make_sp<txt::DynamicFontManager>();
+        g_engine_fonts_owner = engine_fc.get();
+        engine_fc->SetDynamicFontManager(g_engine_dynamic_fonts);
+      }
+      if (family_str.empty())
+        g_engine_dynamic_fonts->font_provider().RegisterTypeface(face);
+      else
+        g_engine_dynamic_fonts->font_provider().RegisterTypeface(face,
+                                                                 family_str);
+      // Rebuilds the resolved-family cache so the face just added is
+      // visible to the next layout.
+      engine_fc->ClearFontFamilyCache();
+    }
+  }
+
+  return SwiftFontCollectionManager::Instance().RegisterFace(face, family_str);
+}
+
 }  // namespace
 
 bool LoadFontFromList(const uint8_t* data,
                       size_t length,
                       const char* family_name) {
   if (data == nullptr || length == 0) return false;
-  std::string family_str = family_name ? family_name : "";
+  sk_sp<SkFontMgr> mgr = txt::GetDefaultFontManager();
+  if (!mgr) return false;
+  // ONE copy of the bytes, shared by the typeface in every collection. The
+  // caller's buffer does not outlive this call, so a copy there must be —
+  // callers that have a PATH should use LoadFontFromFile, which has none.
+  sk_sp<SkData> bytes = SkData::MakeWithCopy(data, length);
+  sk_sp<SkTypeface> face = mgr->makeFromData(std::move(bytes));
+  return RegisterFaceEverywhere(face, family_name ? family_name : "");
+}
 
-  // Also load into the engine's font collection (used by ParagraphBuilder)
-  void* engine_fc_ptr = SwiftBridgeEngineRegistry::GetFontCollection();
-  if (engine_fc_ptr) {
-    auto& engine_fc =
-        *static_cast<std::shared_ptr<txt::FontCollection>*>(engine_fc_ptr);
-    if (engine_fc) {
-      auto stream = std::make_unique<SkMemoryStream>(data, length, true);
-      sk_sp<SkFontMgr> mgr = txt::GetDefaultFontManager();
-      if (mgr) {
-        sk_sp<SkTypeface> face = mgr->makeFromStream(std::move(stream));
-        if (face) {
-          std::lock_guard<std::mutex> lock(g_engine_font_mutex);
-          // Install one manager per collection and keep registering into it.
-          // The provider accumulates (family -> style set), so successive
-          // calls add faces instead of replacing them, and weights within a
-          // family stay distinguishable.
-          if (!g_engine_dynamic_fonts ||
-              g_engine_fonts_owner != engine_fc.get()) {
-            g_engine_dynamic_fonts = sk_make_sp<txt::DynamicFontManager>();
-            g_engine_fonts_owner = engine_fc.get();
-            engine_fc->SetDynamicFontManager(g_engine_dynamic_fonts);
-          }
-          if (family_str.empty())
-            g_engine_dynamic_fonts->font_provider().RegisterTypeface(face);
-          else
-            g_engine_dynamic_fonts->font_provider().RegisterTypeface(
-                face, family_str);
-          // Rebuilds the resolved-family cache so the face just added is
-          // visible to the next layout.
-          engine_fc->ClearFontFamilyCache();
-        }
-      }
-    }
-  }
-
-  // Also load into the standalone manager (fallback)
-  return SwiftFontCollectionManager::Instance().LoadFont(data, length,
-                                                         family_str);
+bool LoadFontFromFile(const char* path, const char* family_name) {
+  if (path == nullptr || *path == '\0') return false;
+  // mmap, not read: the font stays file-backed — shared across every process
+  // that loads it and evictable under pressure, so it costs page cache, not
+  // anonymous RSS. FreeType reads through the mapping on demand.
+  sk_sp<SkData> bytes = SkData::MakeFromFileName(path);
+  if (!bytes) return false;
+  sk_sp<SkFontMgr> mgr = txt::GetDefaultFontManager();
+  if (!mgr) return false;
+  sk_sp<SkTypeface> face = mgr->makeFromData(std::move(bytes));
+  return RegisterFaceEverywhere(face, family_name ? family_name : "");
 }
 
 void ClearFontFamilyCache() {
