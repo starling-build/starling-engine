@@ -983,7 +983,13 @@ const char* CanvasBridge::DrawAtlas(const ImageBridge* atlas,
         reinterpret_cast<const flutter::DlRSTransform*>(rst_transforms),
         reinterpret_cast<const flutter::DlRect*>(rects),
         dl_colors.empty() ? nullptr : dl_colors.data(),
-        rect_count / 4,  // DlRect has 4 floats
+        // `rect_count` is already the number of RECTS — the header says so,
+        // and the Swift side passes `rects.count / 4`. Dividing again here
+        // drew a quarter of every atlas: the terminal's glyph painter
+        // submitted 219 quads and got 54, so text stopped mid-row and every
+        // row after it was blank, while everything drawn by another call
+        // appeared normally.
+        rect_count,
         static_cast<flutter::DlBlendMode>(blend_mode), sampling,
         reinterpret_cast<const flutter::DlRect*>(cull_rect), opt_paint);
   }
