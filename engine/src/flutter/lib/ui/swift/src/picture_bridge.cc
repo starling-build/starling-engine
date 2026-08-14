@@ -5,6 +5,7 @@
 #include "include/picture_bridge.h"
 #include "include/canvas_bridge.h"
 #include "include/image_bridge.h"
+#include "include/swift_bridge_engine_registry.h"
 
 // Flutter engine headers (only in .cc file)
 #include "flutter/display_list/display_list.h"
@@ -72,6 +73,30 @@ void PictureBridge::Dispose() {
 ImageBridge* PictureBridge::ToImage(int width, int height) const {
   if (!impl_ || !impl_->display_list) {
     return nullptr;
+  }
+
+  // Ask the engine to rasterise this the way it rasterises everything else,
+  // if the shell wired that up. It matters most under Impeller, where the
+  // Skia path below cannot draw the display list's text at all and aborts —
+  // see SwiftBridgeEngineRegistry::SnapshotCallback for the whole story.
+  const auto& snapshot =
+      SwiftBridgeEngineRegistry::GetSnapshotCallback();
+  if (snapshot) {
+    void* dl_image_ptr = snapshot(static_cast<const void*>(&impl_->display_list),
+                                  width, height);
+    if (dl_image_ptr) {
+      auto* image_bridge = new ImageBridge();
+      image_bridge->SetDlImageFromPtr(dl_image_ptr);
+      return image_bridge;
+    }
+    // A null from the callback under Impeller must NOT fall through: the
+    // Skia replay below is exactly the path whose FML_CHECK aborts on
+    // Impeller text, so "no snapshot" has to mean "no image", not "die
+    // trying". Skia hosts never take this branch — their callback answers
+    // null immediately and the replay below remains their correct path.
+    if (SwiftBridgeEngineRegistry::GetImpellerEnabled()) {
+      return nullptr;
+    }
   }
 
   // Create a raster SkSurface of the requested dimensions.

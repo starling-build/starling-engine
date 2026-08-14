@@ -176,6 +176,31 @@ FLUTTER_DARWIN_EXPORT
 - (BOOL)run;
 
 /**
+ * Runs the engine in Swift mode (no Dart VM) using the given runtime callbacks.
+ *
+ * The counterpart of the macOS framework's method of the same name, and it
+ * means the same thing: the Shell is built around a SwiftRuntimeController
+ * instead of a DartRuntimeController, so every Shell-to-Framework call lands
+ * in a Swift function pointer and no isolate is ever spawned. The engine that
+ * results is a normal FlutterEngine in every other respect — channels,
+ * platform views, textures and the view controller all behave as they do for
+ * a Dart app.
+ *
+ * Do not also call `run` or any `runWithEntrypoint:` variant. A
+ * FlutterViewController started this way must be handed an already-running
+ * engine, because `viewDidLoad` runs the Dart entrypoint itself for an engine
+ * that is not yet running.
+ *
+ * The runtimeCallbacks pointer must point to a SwiftRuntimeCallbacks struct
+ * (defined in swift_runtime_callbacks.h). The struct is copied internally;
+ * the caller retains ownership of the pointer.
+ *
+ * @param runtimeCallbacks Pointer to a SwiftRuntimeCallbacks struct.
+ * @return YES if the engine started successfully; NO otherwise.
+ */
+- (BOOL)runSwiftWithRuntimeCallbacks:(nonnull const void*)runtimeCallbacks;
+
+/**
  * Runs a Dart program on an Isolate from the main Dart library (i.e. the library that
  * contains `main()`), using "/" (the default route) as the initial route.
  *

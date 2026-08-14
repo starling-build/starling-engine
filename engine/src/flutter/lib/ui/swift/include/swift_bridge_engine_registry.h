@@ -122,6 +122,66 @@ class FLUTTER_SWIFT_BRIDGE_EXPORT SwiftBridgeEngineRegistry {
   /// Returns nullptr if no font collection is set.
   static void* GetFontCollection();
 
+  /// Whether this engine rasterises with Impeller rather than Skia.
+  ///
+  /// It changes what a paragraph must emit, which is why the bridge needs to
+  /// know: with Impeller the text in a display list has to carry an Impeller
+  /// TextFrame (paragraph_skia.cc builds one per blob), and the Impeller
+  /// dispatcher FML_CHECKs on its absence — an abort on the raster thread,
+  /// with the app dying a frame after a launch that looked clean. With Skia
+  /// the blob alone is right and building frames would be waste.
+  ///
+  /// The bridge cannot ask flutter::Settings itself: it deliberately does not
+  /// depend on //flutter/runtime, which is the whole reason this registry
+  /// exists. So the shell sets it where it reads the settings, the same way
+  /// it sets everything else here.
+  ///
+  /// Defaults to false, which is right for every host that forces Skia
+  /// (Linux DRM, GTK, Win32, Cocoa) and wrong only where it is set — iOS,
+  /// where Impeller is not optional at all.
+  static void SetImpellerEnabled(bool enabled);
+
+  /// Whether Impeller is in use (default: false).
+  static bool GetImpellerEnabled();
+
+  /// Rasterises a DisplayList into an image, the way the rasteriser in use
+  /// actually rasterises.
+  ///
+  /// `PictureBridge::ToImage` cannot do this itself. Left to its own devices
+  /// it replays the display list onto a raster SkSurface through
+  /// DlSkCanvasDispatcher, which is correct only where Skia draws the frame
+  /// too. Under Impeller a paragraph's text carries an Impeller TextFrame and
+  /// no Skia blob, so that dispatcher's
+  ///   FML_CHECK(blob) << "Impeller DlText cannot be drawn to a Skia canvas."
+  /// aborts the process — the terminal's glyph atlas hit exactly this on iOS,
+  /// dying on its first paint.
+  ///
+  /// The engine already knows how to do this correctly for either backend
+  /// (`CreateDeferredImage` in lib/ui/painting/picture.cc, which is what
+  /// Dart's `Picture.toImageSync` uses). That code lives above the bridge and
+  /// must stay there — not depending on //flutter/lib/ui or //flutter/runtime
+  /// is the reason this registry exists — so the shell binds it here and the
+  /// bridge just calls it.
+  ///
+  /// Deliberately opaque in both directions, like SetFontCollection above:
+  ///   in  — `const sk_sp<flutter::DisplayList>*`
+  ///   out — a NEW `sk_sp<flutter::DlImage>*`, ownership passing to the
+  ///         caller, or nullptr if the snapshot could not be made.
+  ///
+  /// The image comes back DEFERRED: the raster happens on the raster thread,
+  /// before anything can sample it. That is the same contract Dart's
+  /// toImageSync has, and it is why this can be synchronous here.
+  using SnapshotCallback =
+      std::function<void*(const void* display_list, int width, int height)>;
+
+  /// Sets the snapshot callback. Left unset — every host that predates this,
+  /// and any embedder that never wires it — the bridge keeps its Skia path,
+  /// which is what those hosts were already using.
+  static void SetSnapshotCallback(SnapshotCallback callback);
+
+  /// Returns the registered snapshot callback, or an empty function.
+  static const SnapshotCallback& GetSnapshotCallback();
+
   /// Clears all registered callbacks and resets device pixel ratio.
   ///
   /// Should be called during engine teardown.
@@ -133,8 +193,10 @@ class FLUTTER_SWIFT_BRIDGE_EXPORT SwiftBridgeEngineRegistry {
 
   static RenderCallback render_callback_;
   static ScheduleFrameCallback schedule_frame_callback_;
+  static SnapshotCallback snapshot_callback_;
   static float device_pixel_ratio_;
   static bool frame_rendered_;
+  static bool impeller_enabled_;
   // Opaque storage for std::shared_ptr<txt::FontCollection>.
   // We store it as raw bytes to avoid including txt headers in this header.
   static void* font_collection_storage_;
