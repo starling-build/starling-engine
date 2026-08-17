@@ -16,6 +16,7 @@
 #include <deque>
 #include <errno.h>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -3062,6 +3063,49 @@ void fl_drm_view_add_external_fd(FlDrmView* view,
   ext.fd = fd;
   ext.callback = callback;
   ext.user_data = user_data;
+}
+
+void fl_drm_view_inject_pointer_abs(FlDrmView* view, double x, double y,
+                                    int64_t buttons, double wheel_dx,
+                                    double wheel_dy) {
+  if (!view) {
+    return;
+  }
+  // One injected report, heap-boxed for the trip to the platform thread.
+  // Carries the view because the trampoline hands the callback one void*.
+  struct InjectedPointer {
+    FlDrmView* view;
+    double x, y;
+    int64_t buttons;
+    double wheel_dx, wheel_dy;
+  };
+  auto* ev = new InjectedPointer{view, x, y, buttons, wheel_dx, wheel_dy};
+  if (!fl_drm_view_post_task(
+          view,
+          [](void* ud) {
+            std::unique_ptr<InjectedPointer> e(
+                static_cast<InjectedPointer*>(ud));
+            FlDrmView* v = e->view;
+            // A VT switch away means someone else owns the console; drop
+            // the event rather than move a cursor nobody can see.
+            if (!v->vt_active) {
+              return;
+            }
+            v->input.InjectPointerAbs(v->engine, e->x, e->y, e->buttons,
+                                      e->wheel_dx, e->wheel_dy);
+            // The same dance the libinput branch does after ProcessEvents.
+            // Skipping it leaves the hardware cursor where it was — and the
+            // sprite is what a screen capture (hence a remote viewer) sees.
+            uint32_t cursor_crtc = 0;
+            int cursor_x = 0, cursor_y = 0;
+            if (v->input.CursorPlacement(&cursor_crtc, &cursor_x,
+                                         &cursor_y)) {
+              v->cursor.MoveTo(cursor_crtc, cursor_x, cursor_y);
+            }
+          },
+          ev)) {
+    delete ev;  // trampoline unavailable (pre-create / post-shutdown)
+  }
 }
 
 int fl_drm_view_post_task(FlDrmView* view,
