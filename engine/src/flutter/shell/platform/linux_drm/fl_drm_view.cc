@@ -968,6 +968,12 @@ static void RunCaptureHooks(FlDrmView* v, uint32_t width, uint32_t height) {
           rec->rh = height / 4;
           rec->shift = 2;
           start_writer(rec);
+          // Same flag the API recorder raises. Without it this session is
+          // invisible to fl_drm_view_recording_active(), so the arbitration
+          // built on that — RDP refusing a client, set_primary_output
+          // refusing a switch — lets a second consumer claim the one capture
+          // session mid-recording. stop_rec() already clears it for both.
+          g_api_recording.store(true, std::memory_order_release);
           fprintf(stderr,
                   "[DrmView] Recording started -> /tmp/drm_record.bin\n");
         }
