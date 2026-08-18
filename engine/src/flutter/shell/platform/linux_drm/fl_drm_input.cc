@@ -328,6 +328,64 @@ void FlDrmInput::HandlePointerMotionAbsolute(libinput_event* event) {
   }
 }
 
+void FlDrmInput::InjectPointerAbs(FlutterEngine engine, double x, double y,
+                                  int64_t buttons, double wheel_dx,
+                                  double wheel_dy) {
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  if (regions_.empty()) {
+    return;
+  }
+  // engine_ is normally set by ProcessEvents; an injected event can be the
+  // first pointer event this process ever sees.
+  engine_ = engine;
+
+  // Same transform as HandlePointerMotionAbsolute: the caller's pixels are
+  // the primary output's physical space, so scale and virtual-desktop
+  // placement stay correct without the caller knowing either.
+  const FlInputRegion& p = regions_[PrimaryRegion()];
+  vx_ = p.logical_x + x / p.scale;
+  vy_ = p.logical_y + y / p.scale;
+  current_region_ = PrimaryRegion();
+
+  if (!pointer_added_) {
+    SendPointerEvent(kAdd, 0, 0, 0);
+    pointer_added_ = true;
+  }
+
+  // Buttons arrive as absolute state; the transitions are ours to find.
+  // Press before release, so a chord that swaps buttons in one report still
+  // reads as a continuous gesture rather than an up/down pair.
+  const int64_t pressed = buttons & ~buttons_;
+  const int64_t released = buttons_ & ~buttons;
+  buttons_ = buttons;
+
+  if (pressed) {
+    if (!pointer_down_) {
+      // Pointer capture, exactly as HandlePointerButton establishes it.
+      capture_region_ = current_region_;
+      has_capture_ = true;
+    }
+    pointer_down_ = true;
+    SendPointerEvent(kDown, 0, 0, buttons_);
+  } else if (released) {
+    pointer_down_ = (buttons_ != 0);
+    SendPointerEvent(pointer_down_ ? kMove : kUp, 0, 0, buttons_);
+    if (!pointer_down_) {
+      has_capture_ = false;
+    }
+  } else {
+    SendPointerEvent(pointer_down_ ? kMove : kHover, 0, 0, buttons_);
+  }
+
+  // Scroll rides its own event, like HandlePointerAxis — a pointer event
+  // carrying both a phase change and a scroll signal is not a shape the
+  // framework expects.
+  if (wheel_dx != 0 || wheel_dy != 0) {
+    SendPointerEvent(pointer_down_ ? kMove : kHover, wheel_dx, wheel_dy,
+                     buttons_);
+  }
+}
+
 void FlDrmInput::HandlePointerButton(libinput_event* event) {
   std::lock_guard<std::mutex> lock(state_mutex_);
   auto* pe = libinput_event_get_pointer_event(event);

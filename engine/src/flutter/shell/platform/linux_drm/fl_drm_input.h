@@ -76,6 +76,24 @@ class FlDrmInput {
   // (not the capture region) and output-local physical coordinates.
   bool CursorPlacement(uint32_t* crtc_id, int* x, int* y) const;
 
+  // Synthesize an absolute pointer event from something that is not a
+  // libinput device — the RDP server, and any other remote/automation
+  // source. |x|,|y| are PRIMARY-OUTPUT PHYSICAL pixels (the same space
+  // an absolute libinput device maps into), |buttons| is the ABSOLUTE
+  // Flutter button mask, and the wheel deltas are already in Flutter's
+  // pixel units. Phases are derived by diffing |buttons| against the
+  // current mask, so a caller need only report state, never transitions.
+  //
+  // |engine| is passed explicitly because engine_ is set lazily by
+  // ProcessEvents — an injected event can arrive before any physical
+  // input has ever been handled, and would otherwise send into nullptr.
+  //
+  // PLATFORM THREAD ONLY (it shares state_mutex_ with the libinput
+  // handlers, but Flutter's pointer stream is not thread-safe): reach it
+  // through fl_drm_view_inject_pointer_abs, which marshals.
+  void InjectPointerAbs(FlutterEngine engine, double x, double y,
+                        int64_t buttons, double wheel_dx, double wheel_dy);
+
  private:
   void HandlePointerMotion(libinput_event* event);
   void HandlePointerMotionAbsolute(libinput_event* event);
