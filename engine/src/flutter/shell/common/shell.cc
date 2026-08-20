@@ -938,6 +938,20 @@ std::unique_ptr<Shell> Shell::CreateShellOnPlatformThreadSwift(
                                    std::unique_ptr<LayerTree> layer_tree,
                                    float dpr) {
                   runtime_delegate->Render(view_id, std::move(layer_tree), dpr);
+                  // COMMIT THE TREE NOW. Animator::Render only STAGES the
+                  // layer tree; in Dart mode RuntimeController::Render ends
+                  // with CheckIfAllViewsRendered -> OnAllViewsRendered ->
+                  // Animator::EndFrame, which is what hands the staged tree
+                  // to the raster pipeline. This Swift path skipped that, so
+                  // a tree staged outside a vsync task sat until some LATER
+                  // frame's EndFrame flushed it -- on an idle Windows shell
+                  // that later frame was ~600ms away, measured as a context
+                  // menu whose rows composited at +130ms and reached the
+                  // glass at +725ms, every time, unless the mouse happened
+                  // to be moving. Inside a vsync task this is the same early
+                  // EndFrame the engine already tolerates (the vsync task's
+                  // own EndFrame then no-ops -- see the guard at its head).
+                  runtime_delegate->OnAllViewsRendered();
                 });
             // ScheduleFrame is public on Engine, so we can call it directly.
             Engine* engine_ptr = engine.get();
