@@ -506,6 +506,11 @@ class FlutterWindowsEngine {
   // The start time used to align frames.
   std::chrono::nanoseconds start_time_ = std::chrono::nanoseconds::zero();
 
+  // When the last vsync reply scheduled its frame for, so OnVsync can tell a
+  // paced run of frames (snap to the tick grid) from the first frame after
+  // an idle (fire immediately). See OnVsync.
+  std::chrono::nanoseconds last_frame_start_ = std::chrono::nanoseconds::zero();
+
   // An override of the frame interval used by EngineModifier for testing.
   std::optional<std::chrono::nanoseconds> frame_interval_override_ =
       std::nullopt;

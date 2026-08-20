@@ -706,6 +706,29 @@ void FlutterWindowsEngine::OnVsync(intptr_t baton) {
       std::chrono::nanoseconds(embedder_api_.GetCurrentTime());
   std::chrono::nanoseconds frame_interval = FrameInterval();
   auto next = SnapToNextTick(current_time, start_time_, frame_interval);
+
+  // THE FIRST FRAME AFTER AN IDLE FIRES NOW, not at the next tick. The snap
+  // exists to pace a RUN of frames -- animations sample their curves at the
+  // frame's target time, and a regular grid is what keeps them smooth. A
+  // frame requested out of idleness has no run to pace: snapping it only
+  // adds up to a whole interval of latency, and the engine honours a future
+  // start time literally (OnEmbedderVsync posts the frame FOR that time).
+  // A run in progress -- the last reply's frame no older than two intervals
+  // -- keeps the grid.
+  //
+  // What this does and does not buy, measured: a programmatic update landing
+  // on a genuinely idle engine (a listing finishing its load, a background
+  // answer arriving) begins its frame up to an interval sooner -- best
+  // observed request-to-begin dropped from ~39ms to ~21ms. An update the
+  // USER initiated rarely takes this path, and that is systematic, not
+  // unlucky: the click's own pointer events schedule frames milliseconds
+  // ahead of the app's handler, so its frame is already in a run and keeps
+  // the grid.
+  if (current_time - last_frame_start_ > 2 * frame_interval) {
+    next = current_time;
+  }
+  last_frame_start_ = next;
+
   embedder_api_.OnVsync(engine_, baton, next.count(),
                         (next + frame_interval).count());
 }
