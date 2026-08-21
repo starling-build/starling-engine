@@ -4,6 +4,12 @@
 
 #include "flutter/shell/platform/windows/compositor_opengl.h"
 
+#include <windows.h>
+
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+
 #include "GLES3/gl3.h"
 #include "flutter/shell/platform/windows/flutter_windows_engine.h"
 #include "flutter/shell/platform/windows/flutter_windows_view.h"
@@ -13,6 +19,47 @@ namespace flutter {
 namespace {
 
 constexpr uint32_t kWindowFrameBufferId = 0;
+
+// Starling: present statistics behind STARLING_PRESENT_LOG=1 — one stderr
+// line per presented frame with the swap duration and the gap since the
+// previous present, plus the raw QPC timestamp so external tooling
+// (Stopwatch.GetTimestamp reads the same counter) can correlate input
+// timestamps with presents. This is the raster-thread half of the frame
+// timing whose UI-thread half is the framework's STARLING_FRAME_LOG.
+bool PresentLogEnabled() {
+  static const bool enabled = [] {
+    const char* value = getenv("STARLING_PRESENT_LOG");
+    return value != nullptr && strcmp(value, "1") == 0;
+  }();
+  return enabled;
+}
+
+void PresentLogWrite(const char* kind, int64_t swap_start_qpc) {
+  LARGE_INTEGER now, frequency;
+  QueryPerformanceCounter(&now);
+  QueryPerformanceFrequency(&frequency);
+  // Present runs on the single raster thread; plain statics suffice.
+  static int64_t last_qpc = 0;
+  int64_t swap_us =
+      (now.QuadPart - swap_start_qpc) * 1000000 / frequency.QuadPart;
+  int64_t gap_us =
+      last_qpc != 0 ? (now.QuadPart - last_qpc) * 1000000 / frequency.QuadPart
+                    : 0;
+  last_qpc = now.QuadPart;
+  fprintf(stderr, "[present] kind=%s qpc=%lld swap_us=%lld gap_us=%lld\n",
+          kind, static_cast<long long>(now.QuadPart),
+          static_cast<long long>(swap_us), static_cast<long long>(gap_us));
+  fflush(stderr);
+}
+
+int64_t PresentLogNow() {
+  if (!PresentLogEnabled()) {
+    return 0;
+  }
+  LARGE_INTEGER now;
+  QueryPerformanceCounter(&now);
+  return now.QuadPart;
+}
 
 // The metadata for an OpenGL framebuffer backing store.
 struct FramebufferBackingStore {
@@ -187,8 +234,12 @@ bool CompositorOpenGL::Present(FlutterWindowsView* view,
                   GL_NEAREST            // filter
   );
 
+  int64_t swap_start = PresentLogNow();
   if (!surface->SwapBuffers()) {
     return false;
+  }
+  if (PresentLogEnabled()) {
+    PresentLogWrite("frame", swap_start);
   }
 
   view->OnFramePresented();
@@ -251,8 +302,12 @@ bool CompositorOpenGL::Clear(FlutterWindowsView* view) {
   gl_->ClearColor(0.0f, 0.0f, 0.0f, 0.0f);
   gl_->Clear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
 
+  int64_t swap_start = PresentLogNow();
   if (!surface->SwapBuffers()) {
     return false;
+  }
+  if (PresentLogEnabled()) {
+    PresentLogWrite("clear", swap_start);
   }
 
   view->OnFramePresented();
