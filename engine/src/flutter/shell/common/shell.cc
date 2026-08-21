@@ -934,24 +934,51 @@ std::unique_ptr<Shell> Shell::CreateShellOnPlatformThreadSwift(
             // base class.
             RuntimeDelegate* runtime_delegate = engine.get();
             swift_bridge::SwiftBridgeEngineRegistry::SetRenderCallback(
-                [runtime_delegate](int64_t view_id,
-                                   std::unique_ptr<LayerTree> layer_tree,
-                                   float dpr) {
+                [runtime_delegate, engine_weak = engine->GetWeakPtr(),
+                 ui_task_runner = task_runners.GetUITaskRunner(),
+                 commit_pending = std::make_shared<bool>(false)](
+                    int64_t view_id, std::unique_ptr<LayerTree> layer_tree,
+                    float dpr) {
                   runtime_delegate->Render(view_id, std::move(layer_tree), dpr);
-                  // COMMIT THE TREE NOW. Animator::Render only STAGES the
-                  // layer tree; in Dart mode RuntimeController::Render ends
-                  // with CheckIfAllViewsRendered -> OnAllViewsRendered ->
-                  // Animator::EndFrame, which is what hands the staged tree
+                  // COMMIT THE TREE, ONCE PER PASS. Animator::Render only
+                  // STAGES the layer tree; in Dart mode
+                  // RuntimeController::Render ends with
+                  // CheckIfAllViewsRendered -> OnAllViewsRendered ->
+                  // Animator::EndFrame, which is what hands the staged trees
                   // to the raster pipeline. This Swift path skipped that, so
                   // a tree staged outside a vsync task sat until some LATER
                   // frame's EndFrame flushed it -- on an idle Windows shell
                   // that later frame was ~600ms away, measured as a context
                   // menu whose rows composited at +130ms and reached the
                   // glass at +725ms, every time, unless the mouse happened
-                  // to be moving. Inside a vsync task this is the same early
-                  // EndFrame the engine already tolerates (the vsync task's
-                  // own EndFrame then no-ops -- see the guard at its head).
-                  runtime_delegate->OnAllViewsRendered();
+                  // to be moving.
+                  //
+                  // The commit is POSTED to the tail of the current UI task
+                  // rather than made inline, because EndFrame consumes the
+                  // pipeline's one producer continuation: an inline commit
+                  // after the FIRST view left every further view rendered in
+                  // the same Swift pass staged against an empty continuation
+                  // and silently dropped -- a popup surface composited its
+                  // menu exactly once, in the same pass as the window it
+                  // overhangs, and stayed a black rectangle forever. The
+                  // Swift frame driver renders every view within one task,
+                  // so a task posted from the first Render runs right after
+                  // the pass with all its trees staged, and Dart-mode
+                  // batching is restored. Inside a real vsync task the
+                  // task's own trailing EndFrame commits first and the
+                  // posted one finds the recorder null and no-ops (the
+                  // guard at EndFrame's head).
+                  if (*commit_pending) {
+                    return;
+                  }
+                  *commit_pending = true;
+                  ui_task_runner->PostTask([engine_weak, commit_pending]() {
+                    *commit_pending = false;
+                    if (engine_weak) {
+                      RuntimeDelegate* delegate = engine_weak.get();
+                      delegate->OnAllViewsRendered();
+                    }
+                  });
                 });
             // ScheduleFrame is public on Engine, so we can call it directly.
             Engine* engine_ptr = engine.get();
