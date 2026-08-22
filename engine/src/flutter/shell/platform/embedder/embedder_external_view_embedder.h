@@ -102,6 +102,13 @@ class EmbedderExternalViewEmbedder final : public ExternalViewEmbedder {
   DlCanvas* CompositeEmbeddedView(int64_t view_id) override;
 
   // |ExternalViewEmbedder|
+  bool SupportsPartialRepaint() const override;
+
+  // |ExternalViewEmbedder|
+  std::optional<DlIRect> ExistingViewDamage(
+      int64_t flutter_view_id) override;
+
+  // |ExternalViewEmbedder|
   void SubmitFlutterView(
       int64_t flutter_view_id,
       GrDirectContext* context,
@@ -113,6 +120,16 @@ class EmbedderExternalViewEmbedder final : public ExternalViewEmbedder {
 
  private:
   const bool avoid_backing_store_cache_;
+  // STARLING partial repaint (see flow/embedded_views.h): opt-in via the
+  // STARLING_PARTIAL_REPAINT environment variable; per-view age-1 target
+  // staleness tracking.
+  struct ViewPartialRepaintState {
+    DlISize frame_size;
+    bool next_existing_valid = false;
+    int complete_streak = 0;
+  };
+  const bool partial_repaint_enabled_ = false;
+  std::unordered_map<int64_t, ViewPartialRepaintState> view_partial_state_;
   const CreateRenderTargetCallback create_render_target_callback_;
   const PresentCallback present_callback_;
   SurfaceTransformationCallback surface_transformation_callback_;

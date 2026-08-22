@@ -389,6 +389,19 @@ class ExternalViewEmbedder {
   // Must be called on the UI thread.
   virtual DlCanvas* CompositeEmbeddedView(int64_t platform_view_id) = 0;
 
+  // STARLING: partial repaint through an external view embedder. When an
+  // embedder returns true here, the rasterizer no longer forces a full
+  // repaint for merged-thread frames; it asks ExistingViewDamage for the
+  // view's render-target staleness instead (nullopt = unknown, forces a
+  // full repaint; an empty rect = the target holds the previous frame
+  // exactly, the age-1 case of a cached, preserved backing store). The
+  // embedder is then responsible for clipping its clear-and-replay to the
+  // frame's buffer damage in its Render path.
+  virtual bool SupportsPartialRepaint() const { return false; }
+  virtual std::optional<DlIRect> ExistingViewDamage(int64_t flutter_view_id) {
+    return std::nullopt;
+  }
+
   // Prepare for a view to be drawn.
   virtual void PrepareFlutterView(DlISize frame_size,
                                   double device_pixel_ratio) = 0;

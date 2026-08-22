@@ -103,7 +103,8 @@ class EmbedderExternalView {
   DlISize GetRenderSurfaceSize() const;
 
   bool Render(const EmbedderRenderTarget& render_target,
-              bool clear_surface = true);
+              bool clear_surface = true,
+              const std::optional<DlIRect>& partial_clip = std::nullopt);
 
   const DlRegion& GetDlRegion() const;
 

@@ -4,6 +4,8 @@
 
 #include "flutter/shell/platform/embedder/embedder_external_view_embedder.h"
 
+#include <cstdlib>
+
 #include <cassert>
 #include <utility>
 
@@ -21,16 +23,41 @@ EmbedderExternalViewEmbedder::EmbedderExternalViewEmbedder(
     const CreateRenderTargetCallback& create_render_target_callback,
     const PresentCallback& present_callback)
     : avoid_backing_store_cache_(avoid_backing_store_cache),
+      partial_repaint_enabled_(std::getenv("STARLING_PARTIAL_REPAINT") !=
+                               nullptr),
       create_render_target_callback_(create_render_target_callback),
       present_callback_(present_callback) {
   FML_DCHECK(create_render_target_callback_);
   FML_DCHECK(present_callback_);
 }
 
+// |ExternalViewEmbedder|
+bool EmbedderExternalViewEmbedder::SupportsPartialRepaint() const {
+  return partial_repaint_enabled_;
+}
+
+// |ExternalViewEmbedder|
+std::optional<DlIRect> EmbedderExternalViewEmbedder::ExistingViewDamage(
+    int64_t flutter_view_id) {
+  // Nullopt = unknown, forces a full repaint. An EMPTY rect = the cached
+  // render target holds the previous frame exactly (age-1: one target per
+  // view, collected at the end of every submit and returned by the same
+  // descriptor next frame), so nothing beyond the layer-tree diff is stale.
+  // Valid only while the frame size matches - a resize changes the
+  // descriptor and gets a fresh, uninitialized target.
+  auto it = view_partial_state_.find(flutter_view_id);
+  if (it == view_partial_state_.end() || !it->second.next_existing_valid ||
+      it->second.frame_size != pending_frame_size_) {
+    return std::nullopt;
+  }
+  return DlIRect();
+}
+
 EmbedderExternalViewEmbedder::~EmbedderExternalViewEmbedder() = default;
 
 void EmbedderExternalViewEmbedder::CollectView(int64_t view_id) {
   render_target_caches_.erase(view_id);
+  view_partial_state_.erase(view_id);
 }
 
 void EmbedderExternalViewEmbedder::SetSurfaceTransformationCallback(
@@ -250,12 +277,13 @@ class Layer {
 
   /// Renders this layer Flutter contents to the render target previously
   /// assigned with SetRenderTarget.
-  void RenderFlutterContents() {
+  void RenderFlutterContents(
+      const std::optional<DlIRect>& partial_clip = std::nullopt) {
     FML_DCHECK(has_flutter_contents());
     if (render_target_) {
       bool clear_surface = true;
       for (auto c : flutter_contents_) {
-        c->Render(*render_target_, clear_surface);
+        c->Render(*render_target_, clear_surface, partial_clip);
         clear_surface = false;
       }
     }
@@ -324,17 +352,31 @@ class LayerBuilder {
   }
 
   /// Renders all layers with Flutter contents to their respective render
-  /// targets.
-  void Render() {
+  /// targets. `partial_clip` (STARLING) restricts the clear-and-replay to
+  /// the frame's buffer damage - only ever set for the steady
+  /// single-flutter-layer case, where the cached render target still holds
+  /// the previous frame outside that region.
+  void Render(const std::optional<DlIRect>& partial_clip = std::nullopt) {
     for (auto& layer : layers_) {
       if (layer.has_flutter_contents()) {
-        layer.RenderFlutterContents();
+        layer.RenderFlutterContents(partial_clip);
       }
     }
   }
 
-  /// Populates EmbedderLayers from layer builder's layers.
-  void PushLayers(EmbedderLayers& layers) {
+  /// STARLING: whether this frame's composition is exactly one Flutter
+  /// layer with no platform views - the only shape partial repaint vouches
+  /// for (one cached target, no slicing to change under the diff).
+  bool SinglePlainFlutterLayer() const {
+    return layers_.size() == 1 && layers_[0].has_flutter_contents() &&
+           layers_[0].platform_views().empty();
+  }
+
+  /// Populates EmbedderLayers from layer builder's layers. `frame_damage`
+  /// (STARLING) rides along to the present info so an embedder blitting to
+  /// a preserved window target can copy only what changed this frame.
+  void PushLayers(EmbedderLayers& layers,
+                  const std::optional<DlIRect>& frame_damage = std::nullopt) {
     for (auto& layer : layers_) {
       for (auto& view : layer.platform_views()) {
         auto platform_view_id = view.view_identifier.platform_view_id;
@@ -344,7 +386,7 @@ class LayerBuilder {
       }
       if (layer.render_target() != nullptr) {
         layers.PushBackingStoreLayer(layer.render_target()->GetBackingStore(),
-                                     layer.coverage());
+                                     layer.coverage(), frame_damage);
       }
     }
   }
@@ -438,6 +480,7 @@ void EmbedderExternalViewEmbedder::SubmitFlutterView(
     builder.AddExternalView(view.get());
   }
 
+  bool created_fresh_target = false;
   builder.PrepareBackingStore([&](const DlISize& frame_size) {
     if (!avoid_backing_store_cache_) {
       std::unique_ptr<EmbedderRenderTarget> target =
@@ -447,6 +490,7 @@ void EmbedderExternalViewEmbedder::SubmitFlutterView(
         return target;
       }
     }
+    created_fresh_target = true;
     auto config = MakeBackingStoreConfig(flutter_view_id, frame_size);
     return create_render_target_callback_(context, aiks_context, config);
   });
@@ -475,7 +519,34 @@ void EmbedderExternalViewEmbedder::SubmitFlutterView(
   }
 #endif  //  !SLIMPELLER
 
-  builder.Render();
+  // STARLING partial repaint: when the rasterizer produced a
+  // damage-clipped recording (buffer_damage set - only possible after
+  // ExistingViewDamage vouched for this view), replay it clipped onto the
+  // preserved cached target. A fresh target with a clipped recording is the
+  // one unexpected case (the size guard should make it impossible): render
+  // it unclipped - the culled recording leaves the undamaged area
+  // transparent for one frame - and say so loudly.
+  std::optional<DlIRect> partial_clip;
+  bool partial_requested = partial_repaint_enabled_ &&
+                           frame->submit_info().buffer_damage.has_value();
+  if (partial_requested) {
+    if (created_fresh_target) {
+      FML_LOG(ERROR) << "STARLING partial repaint: damage-clipped frame met a "
+                        "fresh render target; rendering unclipped.";
+    } else if (builder.SinglePlainFlutterLayer()) {
+      partial_clip = frame->submit_info().buffer_damage;
+    }
+    if (std::getenv("STARLING_DAMAGE_LOG") != nullptr) {
+      auto& d = frame->submit_info().buffer_damage;
+      FML_LOG(ERROR) << "[damage] view=" << flutter_view_id
+                     << " clip=" << (partial_clip.has_value() ? 1 : 0)
+                     << " rect=" << (d.has_value() ? d->GetLeft() : -1) << ","
+                     << (d.has_value() ? d->GetTop() : -1) << ","
+                     << (d.has_value() ? d->GetRight() : -1) << ","
+                     << (d.has_value() ? d->GetBottom() : -1);
+    }
+  }
+  builder.Render(partial_clip);
 
 #if !SLIMPELLER
   // We are going to be transferring control back over to the embedder there
@@ -502,7 +573,10 @@ void EmbedderExternalViewEmbedder::SubmitFlutterView(
         pending_frame_size_, pending_device_pixel_ratio_,
         pending_surface_transformation_, presentation_time);
 
-    builder.PushLayers(presented_layers);
+    builder.PushLayers(presented_layers,
+                       partial_clip.has_value()
+                           ? frame->submit_info().frame_damage
+                           : std::nullopt);
 
     presented_layers.InvokePresentCallback(flutter_view_id, present_callback_);
   }
@@ -512,6 +586,29 @@ void EmbedderExternalViewEmbedder::SubmitFlutterView(
   //
   // @warning: Embedder may trample on our OpenGL context here.
   deferred_cleanup_render_targets.clear();
+
+  // STARLING partial repaint bookkeeping: after this frame the cached
+  // target holds it COMPLETELY when the composition was a single plain
+  // Flutter layer and the render was either full or a vouched-for partial.
+  // Then the target's staleness next frame is age-1: existing damage EMPTY.
+  if (partial_repaint_enabled_) {
+    auto& state = view_partial_state_[flutter_view_id];
+    bool complete = builder.SinglePlainFlutterLayer() &&
+                    !avoid_backing_store_cache_ &&
+                    !(partial_requested && created_fresh_target);
+    // Vouch only after TWO consecutive complete frames at one size: the
+    // second frame guarantees the first's target really round-tripped the
+    // cache, which closes the startup window where a vouched frame met a
+    // fresh target and fell back (rendering one frame unclipped).
+    if (complete && state.frame_size == pending_frame_size_) {
+      state.complete_streak = state.complete_streak >= 2 ? 2
+                                                         : state.complete_streak + 1;
+    } else {
+      state.complete_streak = complete ? 1 : 0;
+    }
+    state.next_existing_valid = complete && state.complete_streak >= 2;
+    state.frame_size = pending_frame_size_;
+  }
 
   auto render_targets = builder.ClearAndCollectRenderTargets();
   for (auto& render_target : render_targets) {

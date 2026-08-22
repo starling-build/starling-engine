@@ -5,6 +5,7 @@
 #ifndef FLUTTER_SHELL_PLATFORM_WINDOWS_COMPOSITOR_OPENGL_H_
 #define FLUTTER_SHELL_PLATFORM_WINDOWS_COMPOSITOR_OPENGL_H_
 
+#include <unordered_set>
 #include <memory>
 
 #include "flutter/fml/macros.h"
@@ -36,6 +37,10 @@ class CompositorOpenGL : public Compositor {
 
  private:
   // The Flutter engine that manages the views to render.
+  // STARLING: EGL window surfaces confirmed preserved AND already past
+  // their first preserved swap - eligible for damage-clipped blits.
+  std::unordered_set<void*> preserved_surfaces_;
+
   FlutterWindowsEngine* engine_;
 
  private:

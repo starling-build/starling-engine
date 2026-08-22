@@ -10,6 +10,10 @@
 #include <cstdlib>
 #include <cstring>
 
+#include <algorithm>
+#include <cmath>
+
+#include "flutter/shell/platform/windows/egl/egl.h"
 #include "GLES3/gl3.h"
 #include "flutter/shell/platform/windows/flutter_windows_engine.h"
 #include "flutter/shell/platform/windows/flutter_windows_view.h"
@@ -214,6 +218,54 @@ bool CompositorOpenGL::Present(FlutterWindowsView* view,
 
   auto source_id = layers[0]->backing_store->open_gl.framebuffer.name;
 
+  // STARLING partial present: when the engine reports this frame's damage
+  // and the EGL window surface preserves its back buffer across swaps
+  // (ANGLE on D3D11 renders the GL back buffer into a stable offscreen
+  // texture, so EGL_BUFFER_PRESERVED is honored), blit only the damaged
+  // rect. The first preserved frame still blits fully - the back buffer's
+  // prior content predates preservation. Any doubt falls back to the full
+  // blit.
+  int blit_x0 = 0;
+  int blit_y0 = 0;
+  int blit_x1 = width;
+  int blit_y1 = height;
+  const FlutterBackingStorePresentInfo* present_info =
+      layers[0]->backing_store_present_info;
+  if (present_info != nullptr && present_info->frame_damage != nullptr &&
+      present_info->frame_damage->rects_count == 1) {
+    const FlutterRect& damage = present_info->frame_damage->rects[0];
+    EGLDisplay egl_display = eglGetCurrentDisplay();
+    const EGLSurface& egl_surface = surface->GetHandle();
+    eglSurfaceAttrib(egl_display, egl_surface, EGL_SWAP_BEHAVIOR,
+                     EGL_BUFFER_PRESERVED);
+    EGLint behavior = 0;
+    if (eglQuerySurface(egl_display, egl_surface, EGL_SWAP_BEHAVIOR,
+                        &behavior) == EGL_TRUE &&
+        behavior == EGL_BUFFER_PRESERVED) {
+      if (preserved_surfaces_.count(surface) > 0) {
+        // Damage arrives in top-left device coordinates; the GL blit space
+        // for these framebuffers is bottom-left. Same rect on both sides,
+        // clamped to the target.
+        int left = std::clamp(static_cast<int>(std::floor(damage.left)), 0,
+                              static_cast<int>(width));
+        int top = std::clamp(static_cast<int>(std::floor(damage.top)), 0,
+                             static_cast<int>(height));
+        int right = std::clamp(static_cast<int>(std::ceil(damage.right)), 0,
+                               static_cast<int>(width));
+        int bottom = std::clamp(static_cast<int>(std::ceil(damage.bottom)), 0,
+                                static_cast<int>(height));
+        if (right > left && bottom > top) {
+          blit_x0 = left;
+          blit_x1 = right;
+          blit_y0 = static_cast<int>(height) - bottom;
+          blit_y1 = static_cast<int>(height) - top;
+        }
+      } else {
+        preserved_surfaces_.insert(surface);
+      }
+    }
+  }
+
   // Disable the scissor test as it can affect blit operations.
   // Prevents regressions like: https://github.com/flutter/flutter/issues/140828
   // See OpenGL specification version 4.6, section 18.3.1.
@@ -222,14 +274,14 @@ bool CompositorOpenGL::Present(FlutterWindowsView* view,
   gl_->BindFramebuffer(GL_DRAW_FRAMEBUFFER, kWindowFrameBufferId);
 
   auto blitFramebuffer = GetBlitFramebufferProc(*gl_);
-  blitFramebuffer(0,                    // srcX0
-                  0,                    // srcY0
-                  width,                // srcX1
-                  height,               // srcY1
-                  0,                    // dstX0
-                  0,                    // dstY0
-                  width,                // dstX1
-                  height,               // dstY1
+  blitFramebuffer(blit_x0,              // srcX0
+                  blit_y0,              // srcY0
+                  blit_x1,              // srcX1
+                  blit_y1,              // srcY1
+                  blit_x0,              // dstX0
+                  blit_y0,              // dstY0
+                  blit_x1,              // dstX1
+                  blit_y1,              // dstY1
                   GL_COLOR_BUFFER_BIT,  // mask
                   GL_NEAREST            // filter
   );

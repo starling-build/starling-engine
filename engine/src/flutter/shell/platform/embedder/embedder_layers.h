@@ -23,8 +23,10 @@ class EmbedderLayers {
 
   ~EmbedderLayers();
 
-  void PushBackingStoreLayer(const FlutterBackingStore* store,
-                             const std::vector<DlIRect>& drawn_region);
+  void PushBackingStoreLayer(
+      const FlutterBackingStore* store,
+      const std::vector<DlIRect>& drawn_region,
+      const std::optional<DlIRect>& frame_damage = std::nullopt);
 
   void PushPlatformViewLayer(FlutterPlatformViewIdentifier identifier,
                              const EmbeddedViewParams& params);

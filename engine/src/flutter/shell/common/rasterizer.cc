@@ -750,17 +750,30 @@ DrawSurfaceStatus Rasterizer::DrawToSurfaceUnsafe(
     std::unique_ptr<FrameDamage> damage;
     // when leaf layer tracing is enabled we wish to repaint the whole frame
     // for accurate performance metrics.
-    if (frame->framebuffer_info().supports_partial_repaint) {
+    //
+    // STARLING: an external view embedder that declares
+    // SupportsPartialRepaint takes the partial path too - it supplies the
+    // per-view existing damage itself (the framebuffer_info is per SURFACE,
+    // and under the embedder compositor one surface serves every view), and
+    // its Render path clips the clear-and-replay to the buffer damage.
+    bool embedder_partial = external_view_embedder_ &&
+                            external_view_embedder_->SupportsPartialRepaint();
+    if (frame->framebuffer_info().supports_partial_repaint ||
+        embedder_partial) {
       // Disable partial repaint if external_view_embedder_ SubmitFlutterView is
       // involved - ExternalViewEmbedder unconditionally clears the entire
       // surface and also partial repaint with platform view present is
-      // something that still need to be figured out.
+      // something that still need to be figured out - UNLESS the embedder
+      // declares it handles both (SupportsPartialRepaint above).
       bool force_full_repaint =
-          external_view_embedder_ &&
+          external_view_embedder_ && !embedder_partial &&
           (!raster_thread_merger_ || raster_thread_merger_->IsMerged());
 
       damage = std::make_unique<FrameDamage>();
-      auto existing_damage = frame->framebuffer_info().existing_damage;
+      auto existing_damage =
+          embedder_partial
+              ? external_view_embedder_->ExistingViewDamage(view_id)
+              : frame->framebuffer_info().existing_damage;
       if (existing_damage.has_value() && !force_full_repaint) {
         damage->SetPreviousLayerTree(GetLastLayerTree(view_id));
         damage->AddAdditionalDamage(existing_damage.value());

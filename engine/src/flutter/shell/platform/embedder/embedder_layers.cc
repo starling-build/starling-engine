@@ -21,7 +21,8 @@ EmbedderLayers::~EmbedderLayers() = default;
 
 void EmbedderLayers::PushBackingStoreLayer(
     const FlutterBackingStore* store,
-    const std::vector<DlIRect>& paint_region_vec) {
+    const std::vector<DlIRect>& paint_region_vec,
+    const std::optional<DlIRect>& frame_damage) {
   FlutterLayer layer = {};
 
   layer.struct_size = sizeof(FlutterLayer);
@@ -62,6 +63,27 @@ void EmbedderLayers::PushBackingStoreLayer(
   present_info->struct_size = sizeof(FlutterBackingStorePresentInfo);
   present_info->paint_region = paint_region.get();
   regions_referenced_.push_back(std::move(paint_region));
+  // STARLING: this frame's damage, for embedders that present to a
+  // preserved target and want to copy only what changed.
+  present_info->frame_damage = nullptr;
+  if (frame_damage.has_value()) {
+    auto damage_rects = std::make_unique<std::vector<FlutterRect>>();
+    auto transformed = DlRect::Make(frame_damage.value())
+                           .TransformAndClipBounds(root_surface_transformation_);
+    damage_rects->push_back(FlutterRect{
+        .left = transformed.GetLeft(),
+        .top = transformed.GetTop(),
+        .right = transformed.GetRight(),
+        .bottom = transformed.GetBottom(),
+    });
+    auto damage_region = std::make_unique<FlutterRegion>();
+    damage_region->struct_size = sizeof(FlutterRegion);
+    damage_region->rects = damage_rects->data();
+    damage_region->rects_count = damage_rects->size();
+    rects_referenced_.push_back(std::move(damage_rects));
+    present_info->frame_damage = damage_region.get();
+    regions_referenced_.push_back(std::move(damage_region));
+  }
   layer.backing_store_present_info = present_info.get();
   layer.presentation_time = presentation_time_;
 

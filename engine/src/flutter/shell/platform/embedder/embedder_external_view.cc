@@ -112,7 +112,8 @@ static void InvalidateApiState(SkSurface& skia_surface) {
 #endif
 
 bool EmbedderExternalView::Render(const EmbedderRenderTarget& render_target,
-                                  bool clear_surface) {
+                                  bool clear_surface,
+                                  const std::optional<DlIRect>& partial_clip) {
   TRACE_EVENT0("flutter", "EmbedderExternalView::Render");
   TryEndRecording();
   FML_DCHECK(HasEngineRenderedContents())
@@ -182,6 +183,19 @@ bool EmbedderExternalView::Render(const EmbedderRenderTarget& render_target,
   DlSkCanvasAdapter dl_canvas(canvas);
   int restore_count = dl_canvas.GetSaveCount();
   dl_canvas.SetTransform(surface_transformation_);
+  // STARLING partial repaint: restrict the clear AND the replay to the
+  // frame's buffer damage. The target is a preserved cached FBO holding the
+  // previous frame; outside the clip its pixels are already this frame's
+  // content (unchanged by definition of the damage), and clipping the
+  // replay is also what keeps ops that straddle the damage edge from
+  // double-blending over preserved pixels.
+  if (partial_clip.has_value()) {
+    dl_canvas.Save();
+    const DlIRect& pc = partial_clip.value();
+    dl_canvas.ClipRect(DlRect::MakeLTRB(pc.GetLeft(), pc.GetTop(),
+                                        pc.GetRight(), pc.GetBottom()),
+                       DlClipOp::kIntersect, false);
+  }
   if (clear_surface) {
     dl_canvas.Clear(DlColor::kTransparent());
   }
