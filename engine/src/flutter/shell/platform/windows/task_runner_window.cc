@@ -97,7 +97,17 @@ void TaskRunnerWindow::WakeUp() {
   // PostMessage take precedence over input event messages. Otherwise await
   // Future.delayed(Duration.zero) deadlocks the main thread. (See
   // https://github.com/flutter/flutter/issues/173843)
-  if (thread_id_ == GetCurrentThreadId() && GetQueueStatus(QS_ALLEVENTS) != 0) {
+  //
+  // STARLING: the guard is QS_INPUT, not QS_ALLEVENTS. The hazard the detour
+  // exists for is posted-message priority over INPUT; a queue holding only
+  // timers or paint is not that hazard - and under a host that drains GCD
+  // off an 8ms WM_TIMER the queue is NEVER empty of QS_TIMER, so with
+  // QS_ALLEVENTS every same-thread wake (and with the UI thread merged onto
+  // the platform thread that is every hop of the frame pipeline: vsync
+  // fire, begin-frame, scene commit) paid a threadpool-timer round trip.
+  // Measured as the dominant share of the ~40ms request-to-begin-frame
+  // documented on the after-idle vsync commit.
+  if (thread_id_ == GetCurrentThreadId() && GetQueueStatus(QS_INPUT) != 0) {
     SetTimer(std::chrono::nanoseconds::zero());
     return;
   }
