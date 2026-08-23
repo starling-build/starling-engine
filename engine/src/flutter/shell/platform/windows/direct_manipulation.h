@@ -39,6 +39,15 @@ class DirectManipulationOwner {
   // Called to get updates from DirectManipulation. Should be called frequently
   // to provide smooth updates.
   void Update();
+  // Called by the event handler while the viewport still needs updates pumped
+  // into it: an interaction is running, or inertia is animating. |active| is
+  // false for everything else, including the synthesized reset that follows a
+  // gesture -- that one is finite, so it is left to the idle backstop in
+  // |Update| rather than treated as user input.
+  void SetGestureActive(bool active);
+  // Called by the event handler once the viewport is idle and will produce
+  // nothing further until the next contact. Stops the window's gesture poll.
+  void GestureSettled();
   // Release child event handler and OS resources.
   void Destroy();
   // The target that should be updated when DirectManipulation provides a new
@@ -46,8 +55,17 @@ class DirectManipulationOwner {
   WindowBindingHandlerDelegate* binding_handler_delegate;
 
  private:
+  // Stop the window's gesture poll, if this owner has a window.
+  void StopGesturePolling();
+
   // The window gesture input is occuring on.
   FlutterWindow* window_;
+  // Whether the viewport is mid-gesture, so the poll must keep running even
+  // across updates that report nothing (a user holding a pan still).
+  bool gesture_active_ = false;
+  // Updates pumped since the last sign of life from the viewport. Backstops
+  // the settle callback: a contact that never becomes a gesture never settles.
+  int idle_updates_ = 0;
   // Cookie needed to register child event handler with viewport.
   DWORD viewportHandlerCookie_;
   // Object needed for operation of the DirectManipulation API.
@@ -113,6 +131,9 @@ class DirectManipulationEventHandler
   };
   // Convert transform array to Flutter-usable values.
   GestureData ConvertToGestureData(float transform[6]);
+  // Tell the owner whether the viewport still needs updates, so that a view
+  // with no gesture in flight can stop polling for them.
+  void UpdateGestureActivity(DIRECTMANIPULATION_STATUS current);
   // Unique identifier to associate with all gesture event updates.
   int32_t GetDeviceId();
   // Parent object, used to store the target for gesture event updates.

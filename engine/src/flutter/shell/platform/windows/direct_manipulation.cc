@@ -27,6 +27,15 @@
 
 namespace flutter {
 
+namespace {
+// Updates to pump after the last sign of life from the viewport before the
+// gesture poll is stopped anyway -- about a second at the 14 ms poll interval.
+// A contact that hit-tests but never becomes a gesture (a tap on the trackpad)
+// produces no status change to settle on, so without this the poll armed by
+// DM_POINTERHITTEST would run for the life of the view.
+constexpr int kMaxIdleUpdates = 64;
+}  // namespace
+
 int32_t DirectManipulationEventHandler::GetDeviceId() {
   return (int32_t)reinterpret_cast<int64_t>(this);
 }
@@ -62,12 +71,30 @@ DirectManipulationEventHandler::ConvertToGestureData(float transform[6]) {
   };
 }
 
+void DirectManipulationEventHandler::UpdateGestureActivity(
+    DIRECTMANIPULATION_STATUS current) {
+  if (!owner_) {
+    return;
+  }
+  const bool active = current == DIRECTMANIPULATION_RUNNING ||
+                      current == DIRECTMANIPULATION_INERTIA ||
+                      current == DIRECTMANIPULATION_SUSPENDED;
+  if (active || during_synthesized_reset_) {
+    owner_->SetGestureActive(active);
+  } else {
+    owner_->GestureSettled();
+  }
+}
+
 HRESULT DirectManipulationEventHandler::OnViewportStatusChanged(
     IDirectManipulationViewport* viewport,
     DIRECTMANIPULATION_STATUS current,
     DIRECTMANIPULATION_STATUS previous) {
   if (during_synthesized_reset_) {
     during_synthesized_reset_ = current != DIRECTMANIPULATION_READY;
+    // The reset rides on the same updates a gesture does; the viewport is only
+    // idle once it has finished.
+    UpdateGestureActivity(current);
     return S_OK;
   }
   during_inertia_ = current == DIRECTMANIPULATION_INERTIA;
@@ -114,15 +141,20 @@ HRESULT DirectManipulationEventHandler::OnViewportStatusChanged(
     HRESULT hr = viewport->GetViewportRect(&rect);
     if (FAILED(hr)) {
       FML_LOG(ERROR) << "Failed to get the current viewport rect";
+      // The reset will never complete, so nothing will report the viewport
+      // settled: let the backstop stop the poll rather than run it forever.
+      UpdateGestureActivity(current);
       return E_FAIL;
     }
     hr = viewport->ZoomToRect(rect.left, rect.top, rect.right, rect.bottom,
                               false);
     if (FAILED(hr)) {
       FML_LOG(ERROR) << "Failed to reset the gesture using ZoomToRect";
+      UpdateGestureActivity(current);
       return E_FAIL;
     }
   }
+  UpdateGestureActivity(current);
   return S_OK;
 }
 
@@ -229,16 +261,42 @@ void DirectManipulationOwner::Destroy() {
     WARN_IF_FAILED(manager_->Deactivate(window_->GetWindowHandle()));
   }
 
+  StopGesturePolling();
+
   handler_ = nullptr;
   viewport_ = nullptr;
   updateManager_ = nullptr;
   manager_ = nullptr;
   window_ = nullptr;
+  gesture_active_ = false;
+  idle_updates_ = 0;
 }
 
 void DirectManipulationOwner::SetContact(UINT contactId) {
   if (viewport_) {
     viewport_->SetContact(contactId);
+    // The contact may or may not turn into a gesture; either way the backstop's
+    // grace period starts here, with the poll the window just armed.
+    idle_updates_ = 0;
+  }
+}
+
+void DirectManipulationOwner::SetGestureActive(bool active) {
+  gesture_active_ = active;
+  if (active) {
+    idle_updates_ = 0;
+  }
+}
+
+void DirectManipulationOwner::GestureSettled() {
+  gesture_active_ = false;
+  idle_updates_ = 0;
+  StopGesturePolling();
+}
+
+void DirectManipulationOwner::StopGesturePolling() {
+  if (window_) {
+    window_->StopDirectManipulationTimer();
   }
 }
 
@@ -249,6 +307,8 @@ void DirectManipulationOwner::SetBindingHandlerDelegate(
 
 void DirectManipulationOwner::Update() {
   if (updateManager_) {
+    // Status changes are delivered synchronously from inside this call, so
+    // |gesture_active_| below reflects this tick.
     HRESULT hr = updateManager_->Update(nullptr);
     if (FAILED(hr)) {
       FML_LOG(ERROR) << "updateManager_->Update failed";
@@ -262,6 +322,11 @@ void DirectManipulationOwner::Update() {
           reinterpret_cast<LPWSTR>(&message), 0, NULL);
       FML_LOG(ERROR) << WCharBufferToString(message);
     }
+  }
+  if (gesture_active_) {
+    idle_updates_ = 0;
+  } else if (++idle_updates_ >= kMaxIdleUpdates) {
+    StopGesturePolling();
   }
 }
 

@@ -8,6 +8,8 @@
 #include <dwmapi.h>
 
 #include <chrono>
+#include <cstdlib>
+#include <cstring>
 #include <map>
 
 #include "flutter/fml/logging.h"
@@ -49,6 +51,20 @@ static FlutterPointerDeviceKind GetFlutterPointerDeviceKind() {
     return kFlutterPointerDeviceKindStylus;
   }
   return kFlutterPointerDeviceKindMouse;
+}
+
+// Starling: the DirectManipulation gesture poll was armed when the view window
+// was created and never killed, so every view -- visible, hidden, or parked
+// with no widget tree -- woke its process ~62 times a second for the life of
+// the process. It is now armed on a trackpad contact and stopped once the
+// viewport settles. Set STARLING_DM_TIMER=always to restore the free-running
+// timer, which makes the idle-CPU comparison a one-binary A/B.
+static bool DirectManipulationTimerAlwaysOn() {
+  static const bool always = [] {
+    const char* value = getenv("STARLING_DM_TIMER");
+    return value != nullptr && strcmp(value, "always") == 0;
+  }();
+  return always;
 }
 
 // Translates button codes from Win32 API to FlutterPointerMouseButtons.
@@ -431,13 +447,35 @@ void FlutterWindow::InitializeChild(const char* title,
   }
   SetUserObjectInformationA(GetCurrentProcess(),
                             UOI_TIMERPROC_EXCEPTION_SUPPRESSION, FALSE, 1);
+  // The gesture poll is armed on demand, when a trackpad contact hit-tests onto
+  // this window -- see |StartDirectManipulationTimer|. A view with no gesture
+  // in flight has nothing to update.
+  if (DirectManipulationTimerAlwaysOn()) {
+    StartDirectManipulationTimer();
+  }
+  direct_manipulation_owner_ = std::make_unique<DirectManipulationOwner>(this);
+  direct_manipulation_owner_->Init(width, height);
+}
+
+void FlutterWindow::StartDirectManipulationTimer() {
+  if (direct_manipulation_timer_running_ || window_handle_ == nullptr) {
+    return;
+  }
   // SetTimer is not precise, if a 16 ms interval is requested, it will instead
   // often fire in an interval of 32 ms. Providing a value of 14 will ensure it
   // runs every 16 ms, which will allow for 60 Hz trackpad gesture events, which
   // is the maximal frequency supported by SetTimer.
-  SetTimer(result, kDirectManipulationTimer, 14, nullptr);
-  direct_manipulation_owner_ = std::make_unique<DirectManipulationOwner>(this);
-  direct_manipulation_owner_->Init(width, height);
+  SetTimer(window_handle_, kDirectManipulationTimer, 14, nullptr);
+  direct_manipulation_timer_running_ = true;
+}
+
+void FlutterWindow::StopDirectManipulationTimer() {
+  if (!direct_manipulation_timer_running_ || window_handle_ == nullptr ||
+      DirectManipulationTimerAlwaysOn()) {
+    return;
+  }
+  KillTimer(window_handle_, kDirectManipulationTimer);
+  direct_manipulation_timer_running_ = false;
 }
 
 HWND FlutterWindow::GetWindowHandle() {
@@ -686,7 +724,9 @@ FlutterWindow::HandleMessage(UINT const message,
     }
     case WM_TIMER:
       if (wparam == kDirectManipulationTimer) {
-        direct_manipulation_owner_->Update();
+        if (direct_manipulation_owner_) {
+          direct_manipulation_owner_->Update();
+        }
         return 0;
       }
       break;
@@ -697,6 +737,10 @@ FlutterWindow::HandleMessage(UINT const message,
         if (windows_proc_table_->GetPointerType(contact_id, &pointer_type) &&
             pointer_type == PT_TOUCHPAD) {
           direct_manipulation_owner_->SetContact(contact_id);
+          // The viewport only advances while the poll runs; the owner stops it
+          // again once the gesture, its inertia, and the reset that follows
+          // have all settled.
+          StartDirectManipulationTimer();
         }
       }
       break;
@@ -916,10 +960,12 @@ LRESULT FlutterWindow::Win32DefWindowProc(HWND hWnd,
 
 void FlutterWindow::Destroy() {
   if (window_handle_) {
+    KillTimer(window_handle_, kDirectManipulationTimer);
     text_input_manager_->SetWindowHandle(nullptr);
     DestroyWindow(window_handle_);
     window_handle_ = nullptr;
   }
+  direct_manipulation_timer_running_ = false;
 
   UnregisterClass(window_class_name_.c_str(), nullptr);
 }

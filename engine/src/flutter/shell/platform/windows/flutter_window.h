@@ -155,6 +155,18 @@ class FlutterWindow : public KeyboardManager::WindowDelegate,
   // |FlutterWindowBindingHandler|
   virtual HWND GetWindowHandle() override;
 
+  // Arms the DirectManipulation gesture poll, unless it is already running.
+  //
+  // The viewport is updated manually (see |DirectManipulationOwner::Init|), so
+  // a trackpad gesture only advances while this timer pumps
+  // |DirectManipulationOwner::Update|. It is armed when a trackpad contact
+  // hit-tests onto this window and stopped again once the viewport settles, so
+  // a view with no gesture in flight costs no wakeups.
+  virtual void StartDirectManipulationTimer();
+
+  // Stops the DirectManipulation gesture poll, if it is running.
+  virtual void StopDirectManipulationTimer();
+
   // |FlutterWindowBindingHandler|
   virtual float GetDpiScale() override;
 
@@ -296,6 +308,9 @@ class FlutterWindow : public KeyboardManager::WindowDelegate,
   static const long kWmDpiChangedBeforeParent = 0x02E2;
 
   // Timer identifier for DirectManipulation gesture polling.
+  //
+  // Timer identifiers are unique per window, not per process: this one lives on
+  // the view window only.
   static const int kDirectManipulationTimer = 1;
 
   // Release OS resources associated with the window.
@@ -344,6 +359,9 @@ class FlutterWindow : public KeyboardManager::WindowDelegate,
 
   // Member variable to hold window handle.
   HWND window_handle_ = nullptr;
+
+  // Whether the DirectManipulation gesture poll is currently armed.
+  bool direct_manipulation_timer_running_ = false;
 
   // Member variable to hold the window title.
   std::wstring window_class_name_;

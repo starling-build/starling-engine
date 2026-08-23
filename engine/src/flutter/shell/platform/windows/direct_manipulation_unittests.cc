@@ -5,6 +5,7 @@
 #include "flutter/shell/platform/windows/direct_manipulation.h"
 
 #include "flutter/fml/macros.h"
+#include "flutter/shell/platform/windows/testing/mock_window.h"
 #include "flutter/shell/platform/windows/testing/mock_window_binding_handler_delegate.h"
 #include "gtest/gtest.h"
 
@@ -452,6 +453,118 @@ TEST(DirectManipulationTest, TestGestureWithInitialData) {
   handler->OnViewportStatusChanged((IDirectManipulationViewport*)&viewport,
                                    DIRECTMANIPULATION_READY,
                                    DIRECTMANIPULATION_INERTIA);
+}
+
+// Drive a viewport into the running state, as a trackpad gesture does.
+static void StartGesture(
+    fml::RefPtr<DirectManipulationEventHandler> handler,
+    MockIDirectManipulationViewport* viewport,
+    MockIDirectManipulationContent* content,
+    MockWindowBindingHandlerDelegate* delegate) {
+  EXPECT_CALL(*viewport, GetPrimaryContent(_, _))
+      .WillOnce(::testing::Invoke([content](REFIID in, void** out) {
+        *out = content;
+        return S_OK;
+      }))
+      .RetiresOnSaturation();
+  EXPECT_CALL(*content, GetContentTransform(_, 6))
+      .WillOnce(::testing::Invoke([](float* transform, DWORD size) {
+        transform[0] = 1.0f;
+        transform[4] = 0.0;
+        transform[5] = 0.0;
+        return S_OK;
+      }))
+      .RetiresOnSaturation();
+  EXPECT_CALL(*delegate, OnPointerPanZoomStart(_));
+  handler->OnViewportStatusChanged((IDirectManipulationViewport*)viewport,
+                                   DIRECTMANIPULATION_RUNNING,
+                                   DIRECTMANIPULATION_READY);
+}
+
+// The gesture poll runs until the viewport is idle -- through the inertia and
+// the synthesized reset that follow the user lifting their fingers -- and is
+// stopped the moment it is, so a parked view costs no wakeups.
+TEST(DirectManipulationTest, TestPollingStopsWhenViewportSettles) {
+  MockIDirectManipulationContent content;
+  MockWindowBindingHandlerDelegate delegate;
+  MockIDirectManipulationViewport viewport;
+  MockWindow window;
+  const int DISPLAY_WIDTH = 800;
+  const int DISPLAY_HEIGHT = 600;
+  auto owner = std::make_unique<DirectManipulationOwner>(&window);
+  owner->SetBindingHandlerDelegate(&delegate);
+  auto handler =
+      fml::MakeRefCounted<DirectManipulationEventHandler>(owner.get());
+  EXPECT_CALL(window, StopDirectManipulationTimer()).Times(0);
+  StartGesture(handler, &viewport, &content, &delegate);
+  // Fingers lifted: inertia is still animating, and it needs the updates.
+  EXPECT_CALL(delegate, OnPointerPanZoomEnd(_));
+  EXPECT_CALL(viewport, GetViewportRect(_))
+      .WillOnce(::testing::Invoke([DISPLAY_WIDTH, DISPLAY_HEIGHT](RECT* rect) {
+        rect->left = 0;
+        rect->top = 0;
+        rect->right = DISPLAY_WIDTH;
+        rect->bottom = DISPLAY_HEIGHT;
+        return S_OK;
+      }));
+  EXPECT_CALL(viewport, ZoomToRect(0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT, false))
+      .WillOnce(::testing::Return(S_OK));
+  handler->OnViewportStatusChanged((IDirectManipulationViewport*)&viewport,
+                                   DIRECTMANIPULATION_INERTIA,
+                                   DIRECTMANIPULATION_RUNNING);
+  // Inertia ends, which starts the synthesized reset of the transform. Stopping
+  // here would strand |during_synthesized_reset_| and swallow the next gesture.
+  handler->OnViewportStatusChanged((IDirectManipulationViewport*)&viewport,
+                                   DIRECTMANIPULATION_READY,
+                                   DIRECTMANIPULATION_INERTIA);
+  handler->OnViewportStatusChanged((IDirectManipulationViewport*)&viewport,
+                                   DIRECTMANIPULATION_RUNNING,
+                                   DIRECTMANIPULATION_READY);
+  owner->Update();
+  ::testing::Mock::VerifyAndClearExpectations(&window);
+  // The reset completes: nothing more will happen until the next contact.
+  EXPECT_CALL(window, StopDirectManipulationTimer()).Times(1);
+  handler->OnViewportStatusChanged((IDirectManipulationViewport*)&viewport,
+                                   DIRECTMANIPULATION_READY,
+                                   DIRECTMANIPULATION_RUNNING);
+}
+
+// A gesture the user is holding still reports nothing at all; the poll has to
+// survive that, or the pan stops advancing under their fingers.
+TEST(DirectManipulationTest, TestPollingSurvivesAHeldGesture) {
+  MockIDirectManipulationContent content;
+  MockWindowBindingHandlerDelegate delegate;
+  MockIDirectManipulationViewport viewport;
+  MockWindow window;
+  auto owner = std::make_unique<DirectManipulationOwner>(&window);
+  owner->SetBindingHandlerDelegate(&delegate);
+  auto handler =
+      fml::MakeRefCounted<DirectManipulationEventHandler>(owner.get());
+  StartGesture(handler, &viewport, &content, &delegate);
+  EXPECT_CALL(window, StopDirectManipulationTimer()).Times(0);
+  for (int i = 0; i < 256; i++) {
+    owner->Update();
+  }
+}
+
+// A contact that never becomes a gesture -- a tap on the trackpad -- produces
+// no status change to settle on, so the poll armed by the hit test stops on a
+// backstop instead of running for the life of the view.
+TEST(DirectManipulationTest, TestPollingStopsWhenContactNeverGestures) {
+  MockWindow window;
+  auto owner = std::make_unique<DirectManipulationOwner>(&window);
+  // The backstop is a grace period, not an immediate stop: a contact takes a
+  // few updates to turn into a gesture.
+  EXPECT_CALL(window, StopDirectManipulationTimer()).Times(0);
+  for (int i = 0; i < 8; i++) {
+    owner->Update();
+  }
+  ::testing::Mock::VerifyAndClearExpectations(&window);
+  EXPECT_CALL(window, StopDirectManipulationTimer())
+      .Times(::testing::AtLeast(1));
+  for (int i = 0; i < 128; i++) {
+    owner->Update();
+  }
 }
 
 }  // namespace testing

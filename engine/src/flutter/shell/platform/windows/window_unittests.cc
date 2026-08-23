@@ -304,6 +304,7 @@ TEST(MockWindow, PointerHitTest) {
       std::make_unique<MockDirectManipulationOwner>(&window);
 
   EXPECT_CALL(*direct_manipulation, SetContact).Times(0);
+  EXPECT_CALL(window, StartDirectManipulationTimer()).Times(0);
 
   window.SetDirectManipulationOwner(std::move(direct_manipulation));
   window.InjectWindowMessage(DM_POINTERHITTEST, MAKEWPARAM(pointer_id, 0), 0);
@@ -329,6 +330,9 @@ TEST(MockWindow, TouchPadHitTest) {
       std::make_unique<MockDirectManipulationOwner>(&window);
 
   EXPECT_CALL(*direct_manipulation, SetContact(Eq(pointer_id))).Times(1);
+  // The viewport is updated manually, so the gesture only advances while the
+  // poll armed here is running.
+  EXPECT_CALL(window, StartDirectManipulationTimer()).Times(1);
 
   window.SetDirectManipulationOwner(std::move(direct_manipulation));
   window.InjectWindowMessage(DM_POINTERHITTEST, MAKEWPARAM(pointer_id, 0), 0);
@@ -355,6 +359,7 @@ TEST(MockWindow, UnknownPointerTypeSkipsDirectManipulation) {
       std::make_unique<MockDirectManipulationOwner>(&window);
 
   EXPECT_CALL(*direct_manipulation, SetContact).Times(0);
+  EXPECT_CALL(window, StartDirectManipulationTimer()).Times(0);
 
   window.SetDirectManipulationOwner(std::move(direct_manipulation));
   window.InjectWindowMessage(DM_POINTERHITTEST, MAKEWPARAM(pointer_id, 0), 0);
