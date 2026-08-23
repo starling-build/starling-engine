@@ -4,6 +4,9 @@
 
 #include "flutter/shell/platform/windows/egl/manager.h"
 
+#include <windows.h>
+
+#include <cstdio>
 #include <vector>
 
 #include "flutter/fml/logging.h"
@@ -11,6 +14,35 @@
 
 namespace flutter {
 namespace egl {
+
+
+namespace {
+// Step timing for ANGLE bring-up, gated on the same STARLING_TRACE the shell
+// uses. egl::Manager::Create is ~110 ms of a Starling surface's ~165 ms to
+// first paint, and "ANGLE is slow" is not an answer -- this says which call.
+bool StarlingEglTraceOn() {
+  static int enabled = -1;
+  if (enabled < 0) {
+    wchar_t buf[8];
+    DWORD n = GetEnvironmentVariableW(L"STARLING_TRACE", buf, 8);
+    enabled = (n > 0 && buf[0] != L'0') ? 1 : 0;
+  }
+  return enabled != 0;
+}
+double StarlingNowMs() {
+  LARGE_INTEGER freq, now;
+  QueryPerformanceFrequency(&freq);
+  QueryPerformanceCounter(&now);
+  return (double)now.QuadPart * 1000.0 / (double)freq.QuadPart;
+}
+void StarlingEglStep(const char* label, double* last) {
+  if (!StarlingEglTraceOn()) return;
+  double now = StarlingNowMs();
+  fprintf(stderr, "[egl] %7.1f ms  %s\n", now - *last, label);
+  fflush(stderr);
+  *last = now;
+}
+}  // namespace
 
 int Manager::instance_count_ = 0;
 
@@ -25,18 +57,22 @@ std::unique_ptr<Manager> Manager::Create(GpuPreference gpu_preference) {
 
 Manager::Manager(GpuPreference gpu_preference) {
   ++instance_count_;
+  double t = StarlingNowMs();
 
   if (!InitializeDisplay(gpu_preference)) {
     return;
   }
+  StarlingEglStep("InitializeDisplay TOTAL", &t);
 
   if (!InitializeConfig()) {
     return;
   }
+  StarlingEglStep("InitializeConfig (eglChooseConfig)", &t);
 
   if (!InitializeContexts()) {
     return;
   }
+  StarlingEglStep("InitializeContexts (2x eglCreateContext)", &t);
 
   is_valid_ = true;
 }
@@ -145,11 +181,20 @@ bool Manager::InitializeDisplay(GpuPreference gpu_preference) {
 
   // Attempt to initialize ANGLE's renderer in order of: D3D11, D3D11 Feature
   // Level 9_3 and finally D3D11 WARP.
+  double t = StarlingNowMs();
+  int attempt = 0;
   for (auto config : display_attributes_configs) {
     bool is_last = (config == display_attributes_configs.back());
+    ++attempt;
 
     display_ = egl_get_platform_display_EXT(EGL_PLATFORM_ANGLE_ANGLE,
                                             EGL_DEFAULT_DISPLAY, config);
+    {
+      char buf[96];
+      snprintf(buf, sizeof(buf), "  attempt %d: eglGetPlatformDisplayEXT%s",
+               attempt, display_ == EGL_NO_DISPLAY ? "  (NO DISPLAY)" : "");
+      StarlingEglStep(buf, &t);
+    }
 
     if (display_ == EGL_NO_DISPLAY) {
       if (is_last) {
@@ -161,7 +206,14 @@ bool Manager::InitializeDisplay(GpuPreference gpu_preference) {
       continue;
     }
 
-    if (::eglInitialize(display_, nullptr, nullptr) == EGL_FALSE) {
+    EGLBoolean init_ok = ::eglInitialize(display_, nullptr, nullptr);
+    {
+      char buf[96];
+      snprintf(buf, sizeof(buf), "  attempt %d: eglInitialize%s", attempt,
+               init_ok == EGL_FALSE ? "  (FAILED, falling through)" : "  (ok)");
+      StarlingEglStep(buf, &t);
+    }
+    if (init_ok == EGL_FALSE) {
       if (is_last) {
         LogEGLError("Failed to initialize EGL via ANGLE");
         return false;
