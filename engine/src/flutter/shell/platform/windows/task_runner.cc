@@ -4,6 +4,10 @@
 
 #include "flutter/shell/platform/windows/task_runner.h"
 
+#include <windows.h>
+
+#include <cstdio>
+
 #include <atomic>
 #include <utility>
 
@@ -21,6 +25,39 @@ TaskRunner::TaskRunner(CurrentTimeProc get_current_time,
 TaskRunner::~TaskRunner() {
   task_runner_window_->RemoveDelegate(this);
 }
+
+
+namespace {
+// STARLING_TRACE: name the engine tasks that cost real time during startup.
+// 56 of them add up to ~69 ms on the platform thread and the framework's own
+// build/layout/paint is only ~10 of that, so the rest needed a name.
+bool StarlingTaskTraceOn() {
+  static int enabled = -1;
+  if (enabled < 0) {
+    wchar_t buf[8];
+    DWORD n = GetEnvironmentVariableW(L"STARLING_TRACE", buf, 8);
+    enabled = (n > 0 && buf[0] != L'0') ? 1 : 0;
+  }
+  return enabled != 0;
+}
+double StarlingUptimeMs() {
+  FILETIME created, exited, kernel, user, now;
+  if (!GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user)) {
+    return 0.0;
+  }
+  GetSystemTimeAsFileTime(&now);
+  ULARGE_INTEGER a, b;
+  a.LowPart = created.dwLowDateTime; a.HighPart = created.dwHighDateTime;
+  b.LowPart = now.dwLowDateTime;     b.HighPart = now.dwHighDateTime;
+  return (double)(b.QuadPart - a.QuadPart) / 10000.0;
+}
+double StarlingQpcMs() {
+  LARGE_INTEGER f, n;
+  QueryPerformanceFrequency(&f);
+  QueryPerformanceCounter(&n);
+  return (double)n.QuadPart * 1000.0 / (double)f.QuadPart;
+}
+}  // namespace
 
 std::chrono::nanoseconds TaskRunner::ProcessTasks() {
   const TaskTimePoint now = GetCurrentTimeForTask();
@@ -52,11 +89,23 @@ std::chrono::nanoseconds TaskRunner::ProcessTasks() {
   // Fire expired tasks.
   {
     // Flushing tasks here without holing onto the task queue mutex.
+    const bool trace = StarlingTaskTraceOn() && StarlingUptimeMs() < 900.0;
     for (const auto& task : expired_tasks) {
+      const double t0 = trace ? StarlingQpcMs() : 0.0;
+      const bool is_engine = std::get_if<FlutterTask>(&task.variant) != nullptr;
       if (auto flutter_task = std::get_if<FlutterTask>(&task.variant)) {
         on_task_expired_(flutter_task);
       } else if (auto closure = std::get_if<TaskClosure>(&task.variant))
         (*closure)();
+      if (trace) {
+        const double spent = StarlingQpcMs() - t0;
+        if (spent >= 1.5) {
+          fprintf(stderr, "[task] %6.1f ms  %s  uptime=%.1f\n", spent,
+                  is_engine ? "engine(FlutterTask)" : "embedder(closure)",
+                  StarlingUptimeMs());
+          fflush(stderr);
+        }
+      }
     }
   }
 
