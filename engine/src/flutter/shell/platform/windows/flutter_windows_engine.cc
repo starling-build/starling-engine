@@ -4,7 +4,10 @@
 
 #include "flutter/shell/platform/windows/flutter_windows_engine.h"
 
+#include <windows.h>
+
 #include <dwmapi.h>
+#include <cstdio>
 
 #include <filesystem>
 #include <shared_mutex>
@@ -165,6 +168,29 @@ FlutterLocale CovertToFlutterLocale(const LanguageInfo& info) {
 
 }  // namespace
 
+
+namespace {
+// Startup timing for the engine constructor, gated on the same STARLING_TRACE
+// the shell's host uses. The constructor is ~70% of a Starling surface's time
+// to first paint, so knowing WHICH part costs what is the difference between
+// optimising and guessing.
+void StarlingCtorTrace(const char* label, LARGE_INTEGER start) {
+  static int enabled = -1;
+  if (enabled < 0) {
+    wchar_t buf[8];
+    DWORD n = GetEnvironmentVariableW(L"STARLING_TRACE", buf, 8);
+    enabled = (n > 0 && buf[0] != L'0') ? 1 : 0;
+  }
+  if (!enabled) return;
+  LARGE_INTEGER freq, now;
+  QueryPerformanceFrequency(&freq);
+  QueryPerformanceCounter(&now);
+  double ms = (double)(now.QuadPart - start.QuadPart) * 1000.0 / (double)freq.QuadPart;
+  fprintf(stderr, "[engine-ctor] %7.1f ms  %s\n", ms, label);
+  fflush(stderr);
+}
+}  // namespace
+
 FlutterWindowsEngine::FlutterWindowsEngine(
     const FlutterProjectBundle& project,
     std::shared_ptr<WindowsProcTable> windows_proc_table)
@@ -172,14 +198,21 @@ FlutterWindowsEngine::FlutterWindowsEngine(
       windows_proc_table_(std::move(windows_proc_table)),
       aot_data_(nullptr, nullptr),
       lifecycle_manager_(std::make_unique<WindowsLifecycleManager>(this)) {
+  LARGE_INTEGER starling_ctor_start;
+  QueryPerformanceCounter(&starling_ctor_start);
+  StarlingCtorTrace("ctor: begin", starling_ctor_start);
+
   if (windows_proc_table_ == nullptr) {
     windows_proc_table_ = std::make_shared<WindowsProcTable>();
   }
+  StarlingCtorTrace("WindowsProcTable ready", starling_ctor_start);
 
   gl_ = egl::ProcTable::Create();
+  StarlingCtorTrace("egl::ProcTable::Create", starling_ctor_start);
 
   embedder_api_.struct_size = sizeof(FlutterEngineProcTable);
   FlutterEngineGetProcAddresses(&embedder_api_);
+  StarlingCtorTrace("FlutterEngineGetProcAddresses", starling_ctor_start);
 
   task_runner_ =
       std::make_unique<TaskRunner>(
@@ -208,6 +241,7 @@ FlutterWindowsEngine::FlutterWindowsEngine(
 
   texture_registrar_ =
       std::make_unique<FlutterWindowsTextureRegistrar>(this, gl_);
+  StarlingCtorTrace("messenger/dispatcher/textures", starling_ctor_start);
 
   // Check for impeller support.
   auto& switches = project_->GetSwitches();
@@ -216,9 +250,11 @@ FlutterWindowsEngine::FlutterWindowsEngine(
 
   egl_manager_ = egl::Manager::Create(
       static_cast<egl::GpuPreference>(project_->gpu_preference()));
+  StarlingCtorTrace("egl::Manager::Create  <-- ANGLE/D3D", starling_ctor_start);
   window_proc_delegate_manager_ = std::make_unique<WindowProcDelegateManager>();
 
   display_manager_ = std::make_shared<DisplayManagerWin32>(this);
+  StarlingCtorTrace("DisplayManagerWin32", starling_ctor_start);
 
   window_proc_delegate_manager_->RegisterTopLevelWindowProcDelegate(
       [](HWND hwnd, UINT msg, WPARAM wpar, LPARAM lpar, void* user_data,
@@ -266,6 +302,7 @@ FlutterWindowsEngine::FlutterWindowsEngine(
   window_manager_ = std::make_unique<WindowManager>(this);
   settings_plugin_ = std::make_unique<SettingsPlugin>(messenger_wrapper_.get(),
                                                       task_runner_.get());
+  StarlingCtorTrace("ctor: end", starling_ctor_start);
 }
 
 FlutterWindowsEngine::~FlutterWindowsEngine() {
