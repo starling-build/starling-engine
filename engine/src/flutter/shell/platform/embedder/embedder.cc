@@ -283,9 +283,16 @@ static const flutter::DlIRect FlutterRectToDlIRect(FlutterRect flutter_rect) {
 }
 
 // We need GL_BGRA8_EXT for creating SkSurfaces from FlutterOpenGLSurfaces
-// below.
+// below. GL_RGBA8 is here for the same reason and one more: it used to arrive
+// with Impeller's GLES headers, which are included only under
+// IMPELLER_SUPPORTS_RENDERING, so a build without Impeller lost a constant
+// that this switch -- which has nothing to do with Impeller -- needs either
+// way.
 #ifndef GL_BGRA8_EXT
 #define GL_BGRA8_EXT 0x93A1
+#endif
+#ifndef GL_RGBA8
+#define GL_RGBA8 0x8058
 #endif
 
 static std::optional<SkColorType> FlutterFormatToSkColorType(uint32_t format) {
@@ -488,6 +495,7 @@ InferOpenGLPlatformViewCreationCallback(
            std::move(external_view_embedder)](flutter::Shell& shell) mutable {
         std::shared_ptr<flutter::EmbedderExternalViewEmbedder> view_embedder =
             std::move(external_view_embedder);
+#ifdef IMPELLER_SUPPORTS_RENDERING
         if (enable_impeller) {
           return std::make_unique<flutter::PlatformViewEmbedder>(
               shell,                   // delegate
@@ -499,6 +507,15 @@ InferOpenGLPlatformViewCreationCallback(
               view_embedder             // external view embedder
           );
         }
+#else
+        // Built without Impeller, so --enable-impeller has nothing to select
+        // and the Skia surface below is the only path. The class referenced
+        // above is compiled by embedder/BUILD.gn only when
+        // impeller_supports_rendering is true, and this call site was the one
+        // place that referenced it regardless -- an unresolved external at
+        // link time, long after the switch that caused it.
+        (void)enable_impeller;
+#endif  // IMPELLER_SUPPORTS_RENDERING
         return std::make_unique<flutter::PlatformViewEmbedder>(
             shell,                   // delegate
             shell.GetTaskRunners(),  // task runners

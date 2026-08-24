@@ -5,13 +5,23 @@
 #include "flutter/shell/platform/embedder/embedder_external_texture_gl.h"
 
 #include "flutter/fml/logging.h"
-#include "impeller/core/texture_descriptor.h"
-#include "impeller/display_list/aiks_context.h"
-#include "impeller/display_list/dl_image_impeller.h"
-#include "impeller/geometry/size.h"
-#include "impeller/renderer/backend/gles/context_gles.h"
-#include "impeller/renderer/backend/gles/handle_gles.h"
-#include "impeller/renderer/backend/gles/texture_gles.h"
+
+// Guarded the way embedder.cc and embedder_external_view.cc already guard
+// theirs. This file was the one GL source that included Impeller
+// unconditionally, which never showed because a GL platform had always been
+// built with the Impeller GLES backend enabled -- turn it off and the
+// EMBEDDER stops compiling, on `'GLES3/gl3.h' file not found`, because the
+// include directory arrives with a dependency the embedder only takes when
+// impeller_supports_rendering is true.
+#ifdef IMPELLER_SUPPORTS_RENDERING
+#include "impeller/core/texture_descriptor.h"              // nogncheck
+#include "impeller/display_list/aiks_context.h"            // nogncheck
+#include "impeller/display_list/dl_image_impeller.h"       // nogncheck
+#include "impeller/geometry/size.h"                        // nogncheck
+#include "impeller/renderer/backend/gles/context_gles.h"   // nogncheck
+#include "impeller/renderer/backend/gles/handle_gles.h"    // nogncheck
+#include "impeller/renderer/backend/gles/texture_gles.h"   // nogncheck
+#endif  // IMPELLER_SUPPORTS_RENDERING
 
 #include "include/core/SkPaint.h"
 #include "third_party/skia/include/core/SkAlphaType.h"
@@ -131,6 +141,15 @@ sk_sp<DlImage> EmbedderExternalTextureGL::ResolveTextureImpeller(
     int64_t texture_id,
     impeller::AiksContext* aiks_context,
     const SkISize& size) {
+#ifndef IMPELLER_SUPPORTS_RENDERING
+  // Unreachable in a build without Impeller: ResolveTexture only comes here
+  // when the caller has an AiksContext, and nothing creates one. The method
+  // stays so the class keeps its shape whichever way the engine is built.
+  (void)texture_id;
+  (void)aiks_context;
+  (void)size;
+  return nullptr;
+#else
   std::unique_ptr<FlutterOpenGLTexture> texture =
       external_texture_callback_(texture_id, size.width(), size.height());
 
@@ -167,6 +186,7 @@ sk_sp<DlImage> EmbedderExternalTextureGL::ResolveTextureImpeller(
   }
 
   return impeller::DlImageImpeller::Make(image);
+#endif  // IMPELLER_SUPPORTS_RENDERING
 }
 
 // |flutter::Texture|
