@@ -102,8 +102,6 @@ source_set("common") {
     "rasterizer.h",
     "resource_cache_limit_calculator.cc",
     "resource_cache_limit_calculator.h",
-    "run_configuration.cc",
-    "run_configuration.h",
     "serialization_callbacks.cc",
     "serialization_callbacks.h",
     "shell.cc",
@@ -134,25 +132,50 @@ source_set("common") {
     ":platform_message_handler",
     "//flutter/shell/version",
     "//flutter/third_party/rapidjson",
-    "//flutter/third_party/tonic",
     "//flutter/txt",
   ]
 
+  # RunConfiguration describes which Dart isolate to launch; there is none.
+  if (flutter_enable_dart) {
+    sources += [
+      "run_configuration.cc",
+      "run_configuration.h",
+    ]
+  }
+
+  # tonic is Dart's C++ binding layer; with no VM there is nothing to bind.
+  if (flutter_enable_dart) {
+    public_deps += [ "//flutter/third_party/tonic" ]
+  }
+
   deps = [
-    "$dart_src/runtime:dart_api",
     "//flutter/assets",
     "//flutter/common",
     "//flutter/common/graphics",
     "//flutter/flow",
     "//flutter/fml",
-    "//flutter/lib/ui",
     "//flutter/lib/ui/swift:swift_bridge_engine_registry",
-    "//flutter/runtime",
     "//flutter/shell/common:base64",
     "//flutter/shell/geometry",
     "//flutter/shell/profiling",
     "//flutter/skia",
   ]
+
+  # The VM, its bindings and the full dart:ui -- or the plumbing half of
+  # lib/ui and the runtime-controller interface on its own. See
+  # flutter_enable_dart in //flutter/common/config.gni.
+  if (flutter_enable_dart) {
+    deps += [
+      "$dart_src/runtime:dart_api",
+      "//flutter/lib/ui",
+      "//flutter/runtime",
+    ]
+  } else {
+    deps += [
+      "//flutter/lib/ui:ui_plumbing",
+      "//flutter/runtime:runtime_interface",
+    ]
+  }
 
   # Forward engine registry and runtime controller headers so dependents
   # (like blue_screen_demo and the embedder) can include them.

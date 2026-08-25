@@ -25,6 +25,8 @@ struct ShellArgs;
 // instance of the Flutter engine.
 class EmbedderEngine {
  public:
+#ifndef FLUTTER_NO_DART_VM
+  // The Dart-path constructor: it carries a RunConfiguration.
   EmbedderEngine(
       std::unique_ptr<EmbedderThreadHost> thread_host,
       const TaskRunners& task_runners,
@@ -34,6 +36,7 @@ class EmbedderEngine {
       const Shell::CreateCallback<Rasterizer>& on_create_rasterizer,
       std::unique_ptr<EmbedderExternalTextureResolver>
           external_texture_resolver);
+#endif  // FLUTTER_NO_DART_VM
 
   // Swift mode constructor — takes a RuntimeControllerInterface instead of
   // RunConfiguration.  No Dart VM will be started.
@@ -110,7 +113,9 @@ class EmbedderEngine {
  private:
   std::unique_ptr<EmbedderThreadHost> thread_host_;
   TaskRunners task_runners_;
+#ifndef FLUTTER_NO_DART_VM
   RunConfiguration run_configuration_;
+#endif
   std::unique_ptr<ShellArgs> shell_args_;
   std::unique_ptr<Shell> shell_;
   std::unique_ptr<EmbedderExternalTextureResolver> external_texture_resolver_;

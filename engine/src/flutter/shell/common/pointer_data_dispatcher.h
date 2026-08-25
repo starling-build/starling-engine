@@ -5,7 +5,13 @@
 #ifndef FLUTTER_SHELL_COMMON_POINTER_DATA_DISPATCHER_H_
 #define FLUTTER_SHELL_COMMON_POINTER_DATA_DISPATCHER_H_
 
+#ifdef FLUTTER_NO_DART_VM
+// RuntimeController appears in this file only in a comment; the header was
+// pulling the whole Dart runtime in for it.
+#include "flutter/runtime/runtime_controller_interface.h"
+#else
 #include "flutter/runtime/runtime_controller.h"
+#endif
 #include "flutter/shell/common/animator.h"
 
 namespace flutter {

@@ -170,8 +170,13 @@ void Animator::EndFrame() {
           // If there's no frame scheduled, but we're not yet past the last
           // vsync deadline, bail.
           if (!self->frame_scheduled_) {
+#ifdef FLUTTER_NO_DART_VM
+            // Same clock, without asking the VM for it.
+            auto now = fml::TimePoint::Now().ToEpochDelta();
+#else
             auto now =
                 fml::TimeDelta::FromMicroseconds(Dart_TimelineGetMicros());
+#endif
             if (now > self->dart_frame_deadline_) {
               TRACE_EVENT0("flutter", "BeginFrame idle callback");
               self->delegate_.OnAnimatorNotifyIdle(

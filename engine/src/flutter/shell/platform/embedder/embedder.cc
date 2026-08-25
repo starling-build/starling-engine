@@ -18,7 +18,9 @@
 #include "flutter/fml/native_library.h"
 #include "flutter/fml/status_or.h"
 #include "flutter/fml/thread.h"
+#ifndef FLUTTER_NO_DART_VM
 #include "third_party/dart/runtime/bin/elf_loader.h"
+#endif
 #include "third_party/dart/runtime/include/dart_native_api.h"
 #include "third_party/skia/include/core/SkSurface.h"
 #include "third_party/skia/include/gpu/GpuTypes.h"
@@ -1680,6 +1682,7 @@ struct _FlutterPlatformMessageResponseHandle {
   std::unique_ptr<flutter::PlatformMessage> message;
 };
 
+#ifndef FLUTTER_NO_DART_VM
 struct LoadedElfDeleter {
   void operator()(Dart_LoadedElf* elf) {
     if (elf) {
@@ -1689,15 +1692,28 @@ struct LoadedElfDeleter {
 };
 
 using UniqueLoadedElf = std::unique_ptr<Dart_LoadedElf, LoadedElfDeleter>;
+#endif  // FLUTTER_NO_DART_VM
 
 struct _FlutterEngineAOTData {
+#ifndef FLUTTER_NO_DART_VM
   UniqueLoadedElf loaded_elf = nullptr;
+#endif
   const uint8_t* vm_snapshot_data = nullptr;
   const uint8_t* vm_snapshot_instrs = nullptr;
   const uint8_t* vm_isolate_data = nullptr;
   const uint8_t* vm_isolate_instrs = nullptr;
 };
 
+#ifdef FLUTTER_NO_DART_VM
+FlutterEngineResult FlutterEngineCreateAOTData(
+    const FlutterEngineAOTDataSource* source,
+    FlutterEngineAOTData* data_out) {
+  // No VM, no snapshot: fail loudly rather than half-succeed.
+  return LOG_EMBEDDER_ERROR(kInvalidArguments,
+                           "This engine was built without the Dart VM, "
+                           "so there is no AOT snapshot to load.");
+}
+#else
 FlutterEngineResult FlutterEngineCreateAOTData(
     const FlutterEngineAOTDataSource* source,
     FlutterEngineAOTData* data_out) {
@@ -1751,7 +1767,15 @@ FlutterEngineResult FlutterEngineCreateAOTData(
       kInvalidArguments,
       "Invalid FlutterEngineAOTDataSourceType type specified.");
 }
+#endif  // FLUTTER_NO_DART_VM
 
+#ifdef FLUTTER_NO_DART_VM
+FlutterEngineResult FlutterEngineCollectAOTData(FlutterEngineAOTData data) {
+  // Nothing was ever loaded; free the holder and report success.
+  delete data;
+  return kSuccess;
+}
+#else
 FlutterEngineResult FlutterEngineCollectAOTData(FlutterEngineAOTData data) {
   if (!data) {
     // Deleting a null object should be a no-op.
@@ -1762,6 +1786,7 @@ FlutterEngineResult FlutterEngineCollectAOTData(FlutterEngineAOTData data) {
   delete data;
   return kSuccess;
 }
+#endif  // FLUTTER_NO_DART_VM
 
 // Constructs appropriate mapping callbacks if JIT snapshot locations have been
 // explictly specified.
@@ -2087,17 +2112,20 @@ FlutterEngineResult FlutterEngineInitialize(size_t version,
     }
   }
 
+#ifndef FLUTTER_NO_DART_VM
   if (flutter::DartVM::IsRunningPrecompiledCode()) {
     PopulateAOTSnapshotMappingCallbacks(args, settings);
   } else {
     PopulateJITSnapshotMappingCallbacks(args, settings);
   }
+#endif  // FLUTTER_NO_DART_VM
 
   settings.icu_data_path = icu_data_path;
   settings.assets_path = args->assets_path;
   settings.leak_vm = !SAFE_ACCESS(args, shutdown_dart_vm_when_done, false);
   settings.old_gen_heap_size = SAFE_ACCESS(args, dart_old_gen_heap_size, -1);
 
+#ifndef FLUTTER_NO_DART_VM
   if (!flutter::DartVM::IsRunningPrecompiledCode()) {
     // Verify the assets path contains Dart 2 kernel assets.
     const std::string kApplicationKernelSnapshotFileName = "kernel_blob.bin";
@@ -2110,6 +2138,7 @@ FlutterEngineResult FlutterEngineInitialize(size_t version,
     }
     settings.application_kernel_asset = kApplicationKernelSnapshotFileName;
   }
+#endif  // FLUTTER_NO_DART_VM
 
   if (SAFE_ACCESS(args, root_isolate_create_callback, nullptr) != nullptr) {
     VoidCallback callback =
@@ -2426,6 +2455,16 @@ FlutterEngineResult FlutterEngineInitialize(size_t version,
     }
   };
 
+#ifdef FLUTTER_NO_DART_VM
+  // Everything from here down configures and launches a Dart isolate. This
+  // build has no VM; embedders reach the engine through
+  // FlutterEngineInitializeSwift, which builds the same EmbedderEngine with a
+  // SwiftRuntimeController in place of a RunConfiguration.
+  return LOG_EMBEDDER_ERROR(
+      kInvalidArguments,
+      "This engine was built without the Dart VM. Initialize it with "
+      "FlutterEngineInitializeSwift.");
+#else
   auto run_configuration =
       flutter::RunConfiguration::InferFromSettings(settings);
 
@@ -2475,6 +2514,7 @@ FlutterEngineResult FlutterEngineInitialize(size_t version,
   *engine_out = reinterpret_cast<FLUTTER_API_SYMBOL(FlutterEngine)>(
       embedder_engine.release());
   return kSuccess;
+#endif  // FLUTTER_NO_DART_VM
 }
 
 FlutterEngineResult FlutterEngineRunInitialized(
@@ -3811,9 +3851,24 @@ FlutterEngineResult FlutterEngineUpdateLocales(FLUTTER_API_SYMBOL(FlutterEngine)
 }
 
 bool FlutterEngineRunsAOTCompiledDartCode(void) {
+#ifdef FLUTTER_NO_DART_VM
+  return false;
+#else
   return flutter::DartVM::IsRunningPrecompiledCode();
+#endif
 }
 
+#ifdef FLUTTER_NO_DART_VM
+FlutterEngineResult FlutterEnginePostDartObject(
+    FLUTTER_API_SYMBOL(FlutterEngine) engine,
+    FlutterEngineDartPort port,
+    const FlutterEngineDartObject* object) {
+  // There is no Dart isolate to receive this.
+  return LOG_EMBEDDER_ERROR(kInvalidArguments,
+                           "This engine was built without the Dart VM; "
+                           "there is no isolate to post to.");
+}
+#else
 FlutterEngineResult FlutterEnginePostDartObject(
     FLUTTER_API_SYMBOL(FlutterEngine) engine,
     FlutterEngineDartPort port,
@@ -3937,6 +3992,7 @@ FlutterEngineResult FlutterEnginePostDartObject(
   typed_data_finalizer.Release();
   return kSuccess;
 }
+#endif  // FLUTTER_NO_DART_VM
 
 FlutterEngineResult FlutterEngineNotifyLowMemoryWarning(
     FLUTTER_API_SYMBOL(FlutterEngine) raw_engine) {

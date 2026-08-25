@@ -29,7 +29,9 @@
 #include "flutter/lib/ui/semantics/custom_accessibility_action.h"
 #include "flutter/lib/ui/semantics/semantics_node.h"
 #include "flutter/lib/ui/window/platform_message.h"
+#ifndef FLUTTER_NO_DART_VM
 #include "flutter/runtime/dart_vm_lifecycle.h"
+#endif
 #include "flutter/runtime/platform_data.h"
 #include "flutter/runtime/runtime_controller_interface.h"
 #include "flutter/runtime/service_protocol.h"
@@ -120,6 +122,8 @@ class Shell final : public PlatformView::Delegate,
  public:
   template <class T>
   using CreateCallback = std::function<std::unique_ptr<T>(Shell&)>;
+#ifndef FLUTTER_NO_DART_VM
+  // The Dart-path engine factory: it takes a VM and an isolate snapshot.
   typedef std::function<std::unique_ptr<Engine>(
       Engine::Delegate& delegate,
       const PointerDataDispatcherMaker& dispatcher_maker,
@@ -136,6 +140,7 @@ class Shell final : public PlatformView::Delegate,
       const std::shared_future<impeller::RuntimeStageBackend>&
           runtime_stage_backend)>
       EngineCreateCallback;
+#endif  // FLUTTER_NO_DART_VM
 
   //----------------------------------------------------------------------------
   /// @brief      Creates a shell instance using the provided settings. The
@@ -168,6 +173,8 @@ class Shell final : public PlatformView::Delegate,
   ///             check the validity of the shell (using the IsSetup call)
   ///             immediately after getting a pointer to it.
   ///
+#ifndef FLUTTER_NO_DART_VM
+  // The Dart entry point; CreateSwift is the other one.
   static std::unique_ptr<Shell> Create(
       const PlatformData& platform_data,
       const TaskRunners& task_runners,
@@ -175,6 +182,7 @@ class Shell final : public PlatformView::Delegate,
       const CreateCallback<PlatformView>& on_create_platform_view,
       const CreateCallback<Rasterizer>& on_create_rasterizer,
       bool is_gpu_disabled = false);
+#endif  // FLUTTER_NO_DART_VM
 
   //----------------------------------------------------------------------------
   /// @brief      Creates a shell instance for the Swift runtime path. This
@@ -235,6 +243,8 @@ class Shell final : public PlatformView::Delegate,
   ///             same snapshot or AOT.
   ///
   /// @see        http://flutter.dev/go/multiple-engines
+#ifndef FLUTTER_NO_DART_VM
+  // Spawning a second isolate from this one.
   std::unique_ptr<Shell> Spawn(
       RunConfiguration run_configuration,
       const std::string& initial_route,
@@ -244,15 +254,22 @@ class Shell final : public PlatformView::Delegate,
   //----------------------------------------------------------------------------
   /// @brief      Starts an isolate for the given RunConfiguration.
   ///
+#ifndef FLUTTER_NO_DART_VM
+  // Launching an isolate.
   void RunEngine(RunConfiguration run_configuration);
+#endif  // FLUTTER_NO_DART_VM
+#endif  // FLUTTER_NO_DART_VM
 
   //----------------------------------------------------------------------------
   /// @brief      Starts an isolate for the given RunConfiguration. The
   ///             result_callback will be called with the status of the
   ///             operation.
   ///
+#ifndef FLUTTER_NO_DART_VM
+  // Launching an isolate, with a callback.
   void RunEngine(RunConfiguration run_configuration,
                  const std::function<void(Engine::RunStatus)>& result_callback);
+#endif  // FLUTTER_NO_DART_VM
 
   //------------------------------------------------------------------------------
   /// @return     The settings used to launch this shell.
@@ -429,7 +446,9 @@ class Shell final : public PlatformView::Delegate,
   ///
   /// @return     The Dart VM pointer.
   ///
+#ifndef FLUTTER_NO_DART_VM
   DartVM* GetDartVM();
+#endif
 
   //----------------------------------------------------------------------------
   /// @brief      Notifies the display manager of the updates.
@@ -476,8 +495,11 @@ class Shell final : public PlatformView::Delegate,
   // TODO(dkwingsmt): Extracting this method is part of a bigger change. If the
   // entire change is not eventually landed, we should merge this method back
   // to Create. https://github.com/flutter/flutter/issues/136826
+#ifndef FLUTTER_NO_DART_VM
+  // Snapshot inference for the VM.
   static std::pair<DartVMRef, fml::RefPtr<const DartSnapshot>>
   InferVmInitDataFromSettings(Settings& settings);
+#endif  // FLUTTER_NO_DART_VM
 
  private:
   using ServiceProtocolHandler =
@@ -496,7 +518,11 @@ class Shell final : public PlatformView::Delegate,
       resource_cache_limit_calculator_;
   size_t resource_cache_limit_;
   const Settings settings_;
+#ifndef FLUTTER_NO_DART_VM
+  // Empty on the Swift path even when Dart IS built; absent entirely when
+  // it is not.
   DartVMRef vm_;
+#endif
   mutable std::mutex time_recorder_mutex_;
   std::optional<fml::TimePoint> latest_frame_target_time_;
   std::unique_ptr<PlatformView> platform_view_;  // on platform task runner
@@ -563,6 +589,8 @@ class Shell final : public PlatformView::Delegate,
   // How many frames have been timed since last report.
   size_t UnreportedFramesCount() const;
 
+#ifndef FLUTTER_NO_DART_VM
+  // The constructor that takes a VM.
   Shell(DartVMRef vm,
         const TaskRunners& task_runners,
         fml::RefPtr<fml::RasterThreadMerger> parent_merger,
@@ -570,6 +598,7 @@ class Shell final : public PlatformView::Delegate,
             resource_cache_limit_calculator,
         const Settings& settings,
         bool is_gpu_disabled);
+#endif  // FLUTTER_NO_DART_VM
 
   /// @brief      Constructor for the Swift runtime path. Does not require a
   ///             DartVMRef — the vm_ member is left as a null/empty reference.
@@ -579,6 +608,8 @@ class Shell final : public PlatformView::Delegate,
         const Settings& settings,
         bool is_gpu_disabled);
 
+#ifndef FLUTTER_NO_DART_VM
+  // Dart-path construction.
   static std::unique_ptr<Shell> CreateShellOnPlatformThread(
       DartVMRef vm,
       fml::RefPtr<fml::RasterThreadMerger> parent_merger,
@@ -593,6 +624,7 @@ class Shell final : public PlatformView::Delegate,
       const Shell::CreateCallback<Rasterizer>& on_create_rasterizer,
       const EngineCreateCallback& on_create_engine,
       bool is_gpu_disabled);
+#endif  // FLUTTER_NO_DART_VM
 
   static std::unique_ptr<Shell> CreateShellOnPlatformThreadSwift(
       const std::shared_ptr<ResourceCacheLimitCalculator>&
@@ -605,6 +637,8 @@ class Shell final : public PlatformView::Delegate,
       std::unique_ptr<RuntimeControllerInterface> runtime_controller,
       bool is_gpu_disabled);
 
+#ifndef FLUTTER_NO_DART_VM
+  // Dart-path construction from a snapshot.
   static std::unique_ptr<Shell> CreateWithSnapshot(
       const PlatformData& platform_data,
       const TaskRunners& task_runners,
@@ -619,6 +653,7 @@ class Shell final : public PlatformView::Delegate,
       const CreateCallback<Rasterizer>& on_create_rasterizer,
       const EngineCreateCallback& on_create_engine,
       bool is_gpu_disabled);
+#endif  // FLUTTER_NO_DART_VM
 
   bool Setup(std::unique_ptr<PlatformView> platform_view,
              std::unique_ptr<Engine> engine,

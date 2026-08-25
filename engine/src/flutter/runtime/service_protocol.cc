@@ -88,11 +88,13 @@ void ServiceProtocol::SetHandlerDescription(
 
 void ServiceProtocol::ToggleHooks(bool set) {
   for (const auto& endpoint : endpoints_) {
+#ifndef FLUTTER_NO_DART_VM
     Dart_RegisterIsolateServiceRequestCallback(
         endpoint.data(),                  // method
         &ServiceProtocol::HandleMessage,  // callback
         set ? this : nullptr              // user data
     );
+#endif  // FLUTTER_NO_DART_VM
   }
 }
 

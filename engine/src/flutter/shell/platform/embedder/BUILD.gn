@@ -114,19 +114,29 @@ template("embedder_source_set") {
     public_deps = [ ":embedder_headers" ]
     deps = [
       ":embedder_gpu_configuration",
-      "$dart_src/runtime/bin:dart_io_api",
-      "$dart_src/runtime/bin:elf_loader",
       "//flutter/assets",
       "//flutter/common",
       "//flutter/common/graphics",
       "//flutter/flow",
       "//flutter/fml",
-      "//flutter/lib/ui",
-      "//flutter/runtime:libdart",
       "//flutter/shell/common",
       "//flutter/skia",
-      "//flutter/third_party/tonic",
     ]
+
+    # With no VM there is no dart:ui to bind, no ELF snapshot to load and no
+    # dart:io natives -- which is where the engine's ws2_32, iphlpapi and
+    # CreateProcessW imports come from.
+    if (flutter_enable_dart) {
+      deps += [
+        "$dart_src/runtime/bin:dart_io_api",
+        "$dart_src/runtime/bin:elf_loader",
+        "//flutter/lib/ui",
+        "//flutter/runtime:libdart",
+        "//flutter/third_party/tonic",
+      ]
+    } else {
+      deps += [ "//flutter/lib/ui:ui_plumbing" ]
+    }
 
     if (embedder_enable_gl) {
       sources += [
@@ -488,7 +498,7 @@ shared_library("flutter_engine_library") {
     ldflags += [ "-Wl,--version-script=" + rebase_path("embedder_exports.lst") ]
   }
 
-  if (is_win) {
+  if (is_win && flutter_enable_dart) {
     # The platform embedders' isolate_scope helper calls these three Dart API
     # entry points. Upstream resolves them inside the private engine copy that
     # embedder_as_internal_library drags into each platform library; with that
@@ -496,6 +506,12 @@ shared_library("flutter_engine_library") {
     # come from the one engine in the process — and a Windows DLL exports
     # nothing it is not explicitly told to. The Linux version script needs no
     # equivalent entry because there the internal copy still supplies them.
+    #
+    # With flutter_enable_dart = false there is no isolate to enter and no VM
+    # to define these, and /EXPORT: of a symbol that does not exist is
+    # LNK2001 -- reported against flutter_engine.dll.lib, with no object file
+    # named, because nothing REFERENCES them: the export list alone asks for
+    # them.
     ldflags += [
       "/EXPORT:Dart_CurrentIsolate",
       "/EXPORT:Dart_EnterIsolate",

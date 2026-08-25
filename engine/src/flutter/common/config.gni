@@ -23,6 +23,16 @@ declare_args() {
   # Whether to include backtrace support.
   enable_backtrace = true
 
+  # Whether the Dart VM is part of the build at all.
+  #
+  # Starling drives the engine from Swift: Shell::CreateSwift injects a
+  # SwiftRuntimeController and leaves the shell's vm_ empty, so no Dart code
+  # ever runs. Linking the VM anyway is not just dead bytes -- it puts a
+  # scripting runtime, socket and process natives, dart:ffi and an RWX page
+  # allocator inside a binary that is the Windows shell, and every one of
+  # those is something a code-signing reviewer or an AV heuristic asks about.
+  flutter_enable_dart = true
+
   # Whether binary size optimizations with the assumption that Impeller is the
   # only supported rendering engine are enabled.
   #
@@ -65,6 +75,10 @@ if (flutter_runtime_mode == "debug") {
 
 if (slimpeller) {
   feature_defines_list += [ "SLIMPELLER=1" ]
+}
+
+if (!flutter_enable_dart) {
+  feature_defines_list += [ "FLUTTER_NO_DART_VM=1" ]
 }
 
 if (is_ios || is_mac) {

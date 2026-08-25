@@ -5,9 +5,18 @@
 #ifndef FLUTTER_LIB_UI_SEMANTICS_CUSTOM_ACCESSIBILITY_ACTION_H_
 #define FLUTTER_LIB_UI_SEMANTICS_CUSTOM_ACCESSIBILITY_ACTION_H_
 
+// Explicitly, rather than through tonic: this file used int32_t and
+// std::string without including anything for them, and got away with it
+// because the tonic headers below happened to pull <cstdint> and <string> in.
+#include <cstdint>
+#include <string>
+#include <unordered_map>
+
+#ifndef FLUTTER_NO_DART_VM
 #include "third_party/tonic/dart_library_natives.h"
 #include "third_party/tonic/dart_wrappable.h"
 #include "third_party/tonic/typed_data/typed_list.h"
+#endif
 
 namespace flutter {
 

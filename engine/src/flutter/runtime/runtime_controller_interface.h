@@ -22,8 +22,12 @@
 #include "flutter/lib/ui/window/view_focus.h"
 #include "flutter/lib/ui/window/viewport_metrics.h"
 #include "flutter/shell/common/display.h"
+#ifdef FLUTTER_NO_DART_VM
+#include "flutter/runtime/dart_stubs.h"
+#else
 #include "third_party/dart/runtime/include/dart_api.h"
 #include "third_party/tonic/logging/dart_error.h"
+#endif
 
 namespace flutter {
 

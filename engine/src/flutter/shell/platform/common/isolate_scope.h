@@ -3,7 +3,14 @@
 // found in the LICENSE file.
 
 #include "flutter/fml/logging.h"
+#ifdef FLUTTER_NO_DART_VM
+// There are no isolates to scope to. Dart_Isolate is an opaque handle in
+// dart_api.h; keeping the shape means the callers that hold an Isolate --
+// plugin registrars, mostly -- compile either way.
+using Dart_Isolate = void*;
+#else
 #include "third_party/dart/runtime/include/dart_api.h"
+#endif
 
 #ifndef FLUTTER_SHELL_PLATFORM_COMMON_ISOLATE_SCOPE_H_
 #define FLUTTER_SHELL_PLATFORM_COMMON_ISOLATE_SCOPE_H_

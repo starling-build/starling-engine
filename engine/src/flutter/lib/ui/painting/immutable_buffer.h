@@ -10,9 +10,11 @@
 #include "flutter/fml/macros.h"
 #include "flutter/lib/ui/dart_wrapper.h"
 #include "third_party/skia/include/core/SkData.h"
+#ifndef FLUTTER_NO_DART_VM
 #include "third_party/tonic/dart_library_natives.h"
 #include "third_party/tonic/logging/dart_invoke.h"
 #include "third_party/tonic/typed_data/typed_list.h"
+#endif
 
 namespace flutter {
 
@@ -28,6 +30,8 @@ class ImmutableBuffer : public RefCountedDartWrappable<ImmutableBuffer> {
  public:
   ~ImmutableBuffer() override;
 
+#ifndef FLUTTER_NO_DART_VM
+  // The dart:ui constructors. Nothing calls these without a VM.
   /// Initializes a new ImmutableData from a Dart Uint8List.
   ///
   /// `buffer_handle` is the caller that will be registered as the Dart peer of
@@ -40,6 +44,8 @@ class ImmutableBuffer : public RefCountedDartWrappable<ImmutableBuffer> {
   static Dart_Handle init(Dart_Handle buffer_handle,
                           Dart_Handle data,
                           Dart_Handle callback_handle);
+#endif  // FLUTTER_NO_DART_VM
+
 
   /// Initializes a new ImmutableData from an asset matching a provided
   /// asset string.
@@ -52,6 +58,8 @@ class ImmutableBuffer : public RefCountedDartWrappable<ImmutableBuffer> {
   ///
   /// The second indexed argument is expected to be a void callback to signal
   /// when the copy has completed.
+#ifndef FLUTTER_NO_DART_VM
+  // The remaining dart:ui constructors.
   static Dart_Handle initFromAsset(Dart_Handle buffer_handle,
                                    Dart_Handle asset_name_handle,
                                    Dart_Handle callback_handle);
@@ -69,6 +77,8 @@ class ImmutableBuffer : public RefCountedDartWrappable<ImmutableBuffer> {
   static Dart_Handle initFromFile(Dart_Handle buffer_handle,
                                   Dart_Handle file_path_handle,
                                   Dart_Handle callback_handle);
+#endif  // FLUTTER_NO_DART_VM
+
 
   /// The length of the data in bytes.
   size_t length() const {

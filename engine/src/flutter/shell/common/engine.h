@@ -21,13 +21,19 @@
 #include "flutter/lib/ui/text/font_collection.h"
 #include "flutter/lib/ui/window/platform_message.h"
 #include "flutter/lib/ui/window/viewport_metrics.h"
+#ifndef FLUTTER_NO_DART_VM
 #include "flutter/runtime/dart_vm.h"
+#endif
+#ifndef FLUTTER_NO_DART_VM
 #include "flutter/runtime/runtime_controller.h"
+#endif
 #include "flutter/runtime/runtime_controller_interface.h"
 #include "flutter/runtime/runtime_delegate.h"
 #include "flutter/shell/common/animator.h"
 #include "flutter/shell/common/pointer_data_dispatcher.h"
+#ifndef FLUTTER_NO_DART_VM
 #include "flutter/shell/common/run_configuration.h"
+#endif
 
 namespace flutter {
 
@@ -417,6 +423,8 @@ class Engine final : public RuntimeDelegate, PointerDataDispatcher::Delegate {
   ///                                schedule tasks that manage resources on the
   ///                                GPU.
   ///
+#ifndef FLUTTER_NO_DART_VM
+  // The constructor that takes a VM and an isolate snapshot.
   Engine(Delegate& delegate,
          const PointerDataDispatcherMaker& dispatcher_maker,
          DartVM& vm,
@@ -431,6 +439,7 @@ class Engine final : public RuntimeDelegate, PointerDataDispatcher::Delegate {
          const std::shared_ptr<fml::SyncSwitch>& gpu_disabled_switch,
          const std::shared_future<impeller::RuntimeStageBackend>&
              runtime_stage_backend);
+#endif  // FLUTTER_NO_DART_VM
 
   //----------------------------------------------------------------------------
   /// @brief      Create a Engine that shares as many resources as
@@ -486,7 +495,11 @@ class Engine final : public RuntimeDelegate, PointerDataDispatcher::Delegate {
   ///
   /// @return     The result of the call to run the root isolate.
   ///
+#ifndef FLUTTER_NO_DART_VM
+  // Launching a Dart isolate.
   [[nodiscard]] RunStatus Run(RunConfiguration configuration);
+#endif  // FLUTTER_NO_DART_VM
+
 
   //----------------------------------------------------------------------------
   /// @brief      Tears down an existing root isolate, reuses the components of
@@ -505,7 +518,11 @@ class Engine final : public RuntimeDelegate, PointerDataDispatcher::Delegate {
   /// @return     Whether the restart was successful. If not, the engine and its
   ///             shell must be discarded.
   ///
+#ifndef FLUTTER_NO_DART_VM
+  // Restarting one.
   [[nodiscard]] bool Restart(RunConfiguration configuration);
+#endif  // FLUTTER_NO_DART_VM
+
 
   //----------------------------------------------------------------------------
   /// @brief      Setup default font manager according to specific platform.
@@ -1013,9 +1030,11 @@ class Engine final : public RuntimeDelegate, PointerDataDispatcher::Delegate {
   ///             For interface methods, use the runtime_controller_ member
   ///             directly within the Engine.
   ///
+#ifndef FLUTTER_NO_DART_VM
   const RuntimeController* GetRuntimeController() const {
     return static_cast<const RuntimeController*>(runtime_controller_.get());
   }
+#endif  // FLUTTER_NO_DART_VM
 
   const std::weak_ptr<VsyncWaiter> GetVsyncWaiter() const;
 

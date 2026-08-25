@@ -6,6 +6,21 @@
 
 namespace flutter {
 
+#ifdef FLUTTER_NO_DART_VM
+
+Isolate Isolate::Current() {
+  return Isolate(nullptr);
+}
+
+IsolateScope::IsolateScope(const Isolate& isolate) {
+  isolate_ = isolate.isolate_;
+  previous_ = nullptr;
+}
+
+IsolateScope::~IsolateScope() = default;
+
+#else
+
 Isolate Isolate::Current() {
   Dart_Isolate isolate = Dart_CurrentIsolate();
   return Isolate(isolate);
@@ -36,5 +51,7 @@ IsolateScope::~IsolateScope() {
     Dart_EnterIsolate(previous_);
   }
 }
+
+#endif  // FLUTTER_NO_DART_VM
 
 }  // namespace flutter

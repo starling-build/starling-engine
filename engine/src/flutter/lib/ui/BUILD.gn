@@ -11,6 +11,99 @@ if (is_fuchsia) {
   import("//flutter/tools/fuchsia/gn-sdk/src/gn_configs.gni")
 }
 
+# The parts of lib/ui with no Dart in them.
+#
+# lib/ui is where dart:ui's native bindings live, but it is ALSO where the
+# shell's own plumbing types live -- PlatformMessage, SemanticsNode,
+# ViewportMetrics, PointerDataPacket, KeyDataPacket, ImageDecoder and the
+# image generator registry. Eleven files in shell/common include them, which
+# is why "the shell depends on lib/ui" reads at first like the VM cannot be
+# separated from the shell at all.
+#
+# It can: of the ~84 sources here, 56 touch neither tonic nor Dart_. This
+# target is those, for builds with flutter_enable_dart = false. The
+# Dart-bound classes it deliberately leaves behind are the dart:ui bindings
+# themselves plus SceneBuilder, the codecs and FontCollection -- the Swift
+# path builds its scenes through the swift bridge and hands the shell a
+# txt::FontCollection directly (see Shell::CreateShellOnPlatformThreadSwift).
+source_set("ui_plumbing") {
+  sources = [
+    "floating_point.h",
+    "io_manager.h",
+    "painting/display_list_deferred_image_gpu_skia.cc",
+    "painting/display_list_deferred_image_gpu_skia.h",
+    "painting/display_list_image_gpu.cc",
+    "painting/display_list_image_gpu.h",
+    "painting/image_decoder.cc",
+    "painting/image_decoder.h",
+    "painting/image_descriptor.cc",
+    "painting/image_descriptor.h",
+    "painting/image_decoder_skia.cc",
+    "painting/image_decoder_skia.h",
+    "painting/image_encoding_impl.h",
+    "painting/image_encoding_skia.cc",
+    "painting/image_encoding_skia.h",
+    "painting/image_generator.cc",
+    "painting/image_generator.h",
+    "painting/image_generator_apng.cc",
+    "painting/image_generator_apng.h",
+    "painting/image_generator_registry.cc",
+    "painting/image_generator_registry.h",
+    "semantics/custom_accessibility_action.cc",
+    "semantics/custom_accessibility_action.h",
+    "semantics/semantics_flags.h",
+    "semantics/semantics_node.cc",
+    "semantics/semantics_node.h",
+    "semantics/string_attribute.cc",
+    "semantics/string_attribute.h",
+    "snapshot_delegate.h",
+    "text/asset_manager_font_provider.cc",
+    "text/asset_manager_font_provider.h",
+    "text/font_collection.cc",
+    "text/font_collection.h",
+    "window/key_data.cc",
+    "window/key_data.h",
+    "window/key_data_packet.cc",
+    "window/key_data_packet.h",
+    "window/platform_message.cc",
+    "window/platform_message.h",
+    "window/platform_message_response.cc",
+    "window/platform_message_response.h",
+    "window/pointer_data.cc",
+    "window/pointer_data.h",
+    "window/pointer_data_packet.cc",
+    "window/pointer_data_packet.h",
+    "window/pointer_data_packet_converter.cc",
+    "window/pointer_data_packet_converter.h",
+    "window/view_focus.cc",
+    "window/view_focus.h",
+    "window/viewport_metrics.cc",
+    "window/viewport_metrics.h",
+  ]
+
+  public_configs = [ "//flutter:config" ]
+
+  public_deps = [
+    "//flutter/flow",
+    "//flutter/shell/common:display",
+    "//flutter/shell/common:platform_message_handler",
+    "//flutter/skia/modules/skparagraph",
+    "//flutter/txt",
+  ]
+
+  deps = [
+    "//flutter/assets",
+    "//flutter/runtime:test_font",
+    "//flutter/common",
+    "//flutter/common/graphics",
+    "//flutter/display_list",
+    "//flutter/fml",
+    "//flutter/skia",
+    "//flutter/third_party/rapidjson",
+    "//third_party/zlib",
+  ]
+}
+
 source_set("ui") {
   cflags = [
     # Dart gives us doubles. Skia and Impeller work in floats.

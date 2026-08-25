@@ -16,10 +16,12 @@
 #include "third_party/skia/include/core/SkGraphics.h"
 #include "third_party/skia/include/core/SkStream.h"
 #include "third_party/skia/include/core/SkTypeface.h"
+#ifndef FLUTTER_NO_DART_VM
 #include "third_party/tonic/dart_args.h"
 #include "third_party/tonic/dart_library_natives.h"
 #include "third_party/tonic/logging/dart_invoke.h"
 #include "third_party/tonic/typed_data/typed_list.h"
+#endif
 #include "txt/asset_font_manager.h"
 #include "txt/platform.h"
 #include "txt/test_font_manager.h"
@@ -148,6 +150,7 @@ void FontCollection::RegisterTestFonts() {
   collection_->DisableFontFallback();
 }
 
+#ifndef FLUTTER_NO_DART_VM
 void FontCollection::LoadFontFromList(Dart_Handle font_data_handle,
                                       Dart_Handle callback,
                                       const std::string& family_name) {
@@ -174,5 +177,6 @@ void FontCollection::LoadFontFromList(Dart_Handle font_data_handle,
   font_data.Release();
   tonic::DartInvoke(callback, {tonic::ToDart(0)});
 }
+#endif  // FLUTTER_NO_DART_VM
 
 }  // namespace flutter

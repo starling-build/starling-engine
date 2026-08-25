@@ -11,7 +11,9 @@
 #include "flutter/assets/asset_manager.h"
 #include "flutter/fml/macros.h"
 #include "flutter/fml/memory/ref_ptr.h"
+#ifndef FLUTTER_NO_DART_VM
 #include "third_party/tonic/typed_data/typed_list.h"
+#endif
 #include "txt/font_collection.h"
 
 namespace flutter {
@@ -32,9 +34,13 @@ class FontCollection {
 
   void RegisterTestFonts();
 
+#ifndef FLUTTER_NO_DART_VM
+  // dart:ui loadFontFromList; the Swift path registers fonts directly.
   static void LoadFontFromList(Dart_Handle font_data_handle,
                                Dart_Handle callback,
                                const std::string& family_name);
+#endif  // FLUTTER_NO_DART_VM
+
 
  private:
   std::shared_ptr<txt::FontCollection> collection_;

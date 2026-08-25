@@ -18,7 +18,9 @@
 #include "third_party/skia/include/core/SkImageInfo.h"
 #include "third_party/skia/include/core/SkPixmap.h"
 #include "third_party/skia/include/core/SkSize.h"
+#ifndef FLUTTER_NO_DART_VM
 #include "third_party/tonic/dart_library_natives.h"
+#endif
 
 namespace flutter {
 
@@ -46,6 +48,8 @@ class ImageDescriptor : public RefCountedDartWrappable<ImageDescriptor> {
   ///         an `ImageGenerator` and read EXIF corrected dimensions from the
   ///         image data.
   /// @see    `ImageGeneratorRegistry`
+#ifndef FLUTTER_NO_DART_VM
+  // The dart:ui entry points; the Swift path decodes through ImageDecoder.
   static Dart_Handle initEncoded(Dart_Handle descriptor_handle,
                                  ImmutableBuffer* immutable_buffer,
                                  Dart_Handle callback_handle);
@@ -61,6 +65,8 @@ class ImageDescriptor : public RefCountedDartWrappable<ImageDescriptor> {
 
   /// @brief  Associates a flutter::Codec object with the dart.ui Codec handle.
   void instantiateCodec(Dart_Handle codec, int target_width, int target_height);
+#endif  // FLUTTER_NO_DART_VM
+
 
   /// @brief  The width of this image, EXIF oriented if applicable.
   int width() const { return image_info_.width(); }

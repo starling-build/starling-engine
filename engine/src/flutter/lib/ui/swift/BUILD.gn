@@ -150,15 +150,26 @@ source_set("swift_runtime_controller") {
     "//flutter:config",
   ]
 
-  public_deps = [
-    ":swift_bridge_engine_registry",
-    "//flutter/runtime",
-  ]
+  public_deps = [ ":swift_bridge_engine_registry" ]
 
-  deps = [
-    "//flutter/fml",
-    "//flutter/third_party/tonic",
-  ]
+  # This class implements RuntimeControllerInterface and includes nothing else
+  # from //flutter/runtime, so with no VM it takes the interface alone rather
+  # than a target whose deps are libdart, tonic and dart_io_api.
+  if (flutter_enable_dart) {
+    public_deps += [ "//flutter/runtime" ]
+  } else {
+    public_deps += [ "//flutter/runtime:runtime_interface" ]
+  }
+
+  deps = [ "//flutter/fml" ]
+
+  # tonic came in for the Dart error type the interface reports; with no VM
+  # that is an enum in dart_stubs.h, and this was the last edge dragging
+  # tonic -- and with it Dart_CurrentIsolate/EnterIsolate/ExitIsolate -- into
+  # the engine library.
+  if (flutter_enable_dart) {
+    deps += [ "//flutter/third_party/tonic" ]
+  }
 }
 
 # Main Swift bridge library.

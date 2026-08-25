@@ -6,7 +6,9 @@
 #define FLUTTER_LIB_UI_SEMANTICS_STRING_ATTRIBUTE_H_
 
 #include "flutter/lib/ui/dart_wrapper.h"
+#ifndef FLUTTER_NO_DART_VM
 #include "third_party/tonic/dart_library_natives.h"
+#endif
 
 namespace flutter {
 
@@ -63,6 +65,8 @@ class NativeStringAttribute
 
   //----------------------------------------------------------------------------
   /// The init method for SpellOutStringAttribute constructor
+#ifndef FLUTTER_NO_DART_VM
+  // The dart:ui constructors.
   static void initSpellOutStringAttribute(Dart_Handle string_attribute_handle,
                                           int32_t start,
                                           int32_t end);
@@ -73,6 +77,8 @@ class NativeStringAttribute
                                         int32_t start,
                                         int32_t end,
                                         std::string locale);
+#endif  // FLUTTER_NO_DART_VM
+
 
   //----------------------------------------------------------------------------
   /// Returns the c++ representataion of StringAttribute.

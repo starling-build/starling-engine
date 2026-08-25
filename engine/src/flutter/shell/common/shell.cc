@@ -27,7 +27,9 @@
 #include "flutter/fml/message_loop.h"
 #include "flutter/fml/paths.h"
 #include "flutter/fml/trace_event.h"
+#ifndef FLUTTER_NO_DART_VM
 #include "flutter/runtime/dart_vm.h"
+#endif
 #include "flutter/shell/common/base64.h"
 #include "flutter/lib/ui/painting/display_list_deferred_image_gpu_impeller.h"
 #include "flutter/lib/ui/swift/include/swift_bridge_engine_registry.h"
@@ -59,6 +61,7 @@ constexpr char kFontChange[] = "fontsChange";
 
 namespace {
 
+#ifndef FLUTTER_NO_DART_VM
 std::unique_ptr<Engine> CreateEngine(
     Engine::Delegate& delegate,
     const PointerDataDispatcherMaker& dispatcher_maker,
@@ -88,6 +91,7 @@ std::unique_ptr<Engine> CreateEngine(
                                   gpu_disabled_switch,  //
                                   runtime_stage_backend);
 }
+#endif  // FLUTTER_NO_DART_VM
 
 void RegisterCodecsWithSkia() {
   // These are in the order they will be attempted to be decoded from.
@@ -119,8 +123,10 @@ void PerformInitializationTasks(Settings& settings) {
 
   static std::once_flag gShellSettingsInitialization = {};
   std::call_once(gShellSettingsInitialization, [&settings] {
+#ifndef FLUTTER_NO_DART_VM
     tonic::SetLogHandler(
         [](const char* message) { FML_LOG(ERROR) << message; });
+#endif
 
     if (settings.trace_skia) {
       InitSkiaEventTracer(settings.trace_skia, settings.trace_skia_allowlist);
@@ -205,6 +211,8 @@ bool ValidateViewportMetrics(const ViewportMetrics& metrics) {
 
 }  // namespace
 
+#ifndef FLUTTER_NO_DART_VM
+// Creates the VM.
 std::pair<DartVMRef, fml::RefPtr<const DartSnapshot>>
 Shell::InferVmInitDataFromSettings(Settings& settings) {
   // Always use the `vm_snapshot` and `isolate_snapshot` provided by the
@@ -221,7 +229,10 @@ Shell::InferVmInitDataFromSettings(Settings& settings) {
   }
   return {std::move(vm), isolate_snapshot};
 }
+#endif  // FLUTTER_NO_DART_VM
 
+#ifndef FLUTTER_NO_DART_VM
+// The Dart entry point.
 std::unique_ptr<Shell> Shell::Create(
     const PlatformData& platform_data,
     const TaskRunners& task_runners,
@@ -251,7 +262,10 @@ std::unique_ptr<Shell> Shell::Create(
                             on_create_rasterizer,              //
                             CreateEngine, is_gpu_disabled);
 }
+#endif  // FLUTTER_NO_DART_VM
 
+#ifndef FLUTTER_NO_DART_VM
+// Dart-path construction.
 std::unique_ptr<Shell> Shell::CreateShellOnPlatformThread(
     DartVMRef vm,
     fml::RefPtr<fml::RasterThreadMerger> parent_merger,
@@ -447,7 +461,10 @@ std::unique_ptr<Shell> Shell::CreateShellOnPlatformThread(
 
   return shell;
 }
+#endif  // FLUTTER_NO_DART_VM
 
+#ifndef FLUTTER_NO_DART_VM
+// Dart-path construction from a snapshot.
 std::unique_ptr<Shell> Shell::CreateWithSnapshot(
     const PlatformData& platform_data,
     const TaskRunners& task_runners,
@@ -509,7 +526,10 @@ std::unique_ptr<Shell> Shell::CreateWithSnapshot(
   latch.Wait();
   return shell;
 }
+#endif  // FLUTTER_NO_DART_VM
 
+#ifndef FLUTTER_NO_DART_VM
+// The constructor that takes a VM.
 Shell::Shell(DartVMRef vm,
              const TaskRunners& task_runners,
              fml::RefPtr<fml::RasterThreadMerger> parent_merger,
@@ -600,6 +620,7 @@ Shell::Shell(DartVMRef vm,
       std::bind(&Shell::OnServiceProtocolReloadAssetFonts, this,
                 std::placeholders::_1, std::placeholders::_2)};
 }
+#endif  // FLUTTER_NO_DART_VM
 
 Shell::Shell(const TaskRunners& task_runners,
              const std::shared_ptr<ResourceCacheLimitCalculator>&
@@ -610,7 +631,6 @@ Shell::Shell(const TaskRunners& task_runners,
       parent_raster_thread_merger_(nullptr),
       resource_cache_limit_calculator_(resource_cache_limit_calculator),
       settings_(settings),
-      vm_(),
       is_gpu_disabled_sync_switch_(new fml::SyncSwitch(is_gpu_disabled)),
       weak_factory_gpu_(nullptr),
       weak_factory_(this) {
@@ -1011,10 +1031,12 @@ Shell::~Shell() {
       task_runners_.GetIOTaskRunner());
 #endif  //  !SLIMPELLER
 
+#ifndef FLUTTER_NO_DART_VM
   // vm_ is null for the Swift runtime path — skip service protocol cleanup.
   if (vm_) {
     vm_->GetServiceProtocol()->RemoveHandler(this);
   }
+#endif  // FLUTTER_NO_DART_VM
 
   fml::AutoResetWaitableEvent platiso_latch, ui_latch, gpu_latch,
       platform_latch, io_latch;
@@ -1089,6 +1111,8 @@ Shell::~Shell() {
   }
 }
 
+#ifndef FLUTTER_NO_DART_VM
+// Spawning a second isolate.
 std::unique_ptr<Shell> Shell::Spawn(
     RunConfiguration run_configuration,
     const std::string& initial_route,
@@ -1142,6 +1166,7 @@ std::unique_ptr<Shell> Shell::Spawn(
   result->RunEngine(std::move(run_configuration));
   return result;
 }
+#endif  // FLUTTER_NO_DART_VM
 
 void Shell::NotifyLowMemoryWarning() const {
   auto trace_id = fml::tracing::TraceNonce();
@@ -1151,9 +1176,11 @@ void Shell::NotifyLowMemoryWarning() const {
   // Since a valid shell will not be returned to the embedder without a valid
   // DartVMRef, we can be certain that this is a safe spot to assume a VM is
   // running. Skip for the Swift runtime path where there is no DartVM.
+#ifndef FLUTTER_NO_DART_VM
   if (vm_) {
     ::Dart_NotifyLowMemory();
   }
+#endif  // FLUTTER_NO_DART_VM
 
   task_runners_.GetRasterTaskRunner()->PostTask(
       [rasterizer = rasterizer_->GetWeakPtr(), trace_id = trace_id]() {
@@ -1173,10 +1200,14 @@ void Shell::FlushMicrotaskQueue() const {
   }
 }
 
+#ifndef FLUTTER_NO_DART_VM
+// Launching an isolate.
 void Shell::RunEngine(RunConfiguration run_configuration) {
   RunEngine(std::move(run_configuration), nullptr);
 }
+#endif  // FLUTTER_NO_DART_VM
 
+#ifndef FLUTTER_NO_DART_VM
 void Shell::RunEngine(
     RunConfiguration run_configuration,
     const std::function<void(Engine::RunStatus)>& result_callback) {
@@ -1210,6 +1241,7 @@ void Shell::RunEngine(
             result(run_result);
           }));
 }
+#endif  // FLUTTER_NO_DART_VM
 
 std::optional<DartErrorCode> Shell::GetUIIsolateLastError() const {
   FML_DCHECK(is_set_up_);
@@ -1359,12 +1391,15 @@ fml::WeakPtr<ShellIOManager> Shell::GetIOManager() {
   return io_manager_->GetWeakPtr();
 }
 
+#ifndef FLUTTER_NO_DART_VM
+// There is no VM to hand out.
 DartVM* Shell::GetDartVM() {
   if (!vm_) {
     return nullptr;
   }
   return &vm_;
 }
+#endif  // FLUTTER_NO_DART_VM
 
 // |PlatformView::Delegate|
 void Shell::OnPlatformViewCreated(std::unique_ptr<Surface> surface) {
@@ -2029,7 +2064,9 @@ void Shell::OnRootIsolateCreated() {
       [self = weak_factory_.GetWeakPtr(),
        description = std::move(description)]() {
         if (self) {
+#ifndef FLUTTER_NO_DART_VM
           self->vm_->GetServiceProtocol()->AddHandler(self.get(), description);
+#endif
         }
       });
   is_added_to_service_protocol_ = true;
@@ -2039,7 +2076,9 @@ void Shell::OnRootIsolateCreated() {
 void Shell::UpdateIsolateDescription(const std::string isolate_name,
                                      int64_t isolate_port) {
   Handler::Description description(isolate_port, isolate_name);
+#ifndef FLUTTER_NO_DART_VM
   vm_->GetServiceProtocol()->SetHandlerDescription(this, description);
+#endif
 }
 
 void Shell::SetNeedsReportTimings(bool value) {
@@ -2353,6 +2392,8 @@ bool Shell::OnServiceProtocolScreenshotSKP(
 }
 
 // Service protocol handler
+#ifndef FLUTTER_NO_DART_VM
+// Hot reload: recreates the isolate from a new kernel snapshot.
 bool Shell::OnServiceProtocolRunInView(
     const ServiceProtocol::Handler::ServiceProtocolMap& params,
     rapidjson::Document* response) {
@@ -2425,6 +2466,7 @@ bool Shell::OnServiceProtocolRunInView(
   FML_DCHECK(false);
   return false;
 }
+#endif  // FLUTTER_NO_DART_VM
 
 // Service protocol handler
 bool Shell::OnServiceProtocolFlushUIThreadTasks(
@@ -2841,11 +2883,17 @@ const std::weak_ptr<VsyncWaiter> Shell::GetVsyncWaiter() const {
 
 const std::shared_ptr<fml::ConcurrentTaskRunner>
 Shell::GetConcurrentWorkerTaskRunner() const {
+#ifdef FLUTTER_NO_DART_VM
+  // This runner belonged to the VM's concurrent worker pool. The Swift path
+  // has no VM, and its callers already handle a null runner.
+  return nullptr;
+#else
   FML_DCHECK(vm_);
   if (!vm_) {
     return nullptr;
   }
   return vm_->GetConcurrentWorkerTaskRunner();
+#endif
 }
 
 BoxConstraints Shell::ExpectedFrameConstraints(int64_t view_id) {

@@ -93,7 +93,9 @@ void SamplingProfiler::UpdateDartVMServiceThreadName() const {
 
   profiler_task_runner_->PostTask(
       [label = thread_label_ + std::string{".profiler"}]() {
+#ifndef FLUTTER_NO_DART_VM
         Dart_SetThreadName(label.c_str());
+#endif  // FLUTTER_NO_DART_VM
       });
 }
 

@@ -7,18 +7,21 @@
 #include "flutter/fml/logging.h"
 #include "flutter/lib/ui/ui_dart_state.h"
 #include "third_party/tonic/dart_args.h"
+#ifndef FLUTTER_NO_DART_VM
 #include "third_party/tonic/dart_binding_macros.h"
+#endif
 
 #include <memory>
 #include <utility>
 
 namespace flutter {
 
-IMPLEMENT_WRAPPERTYPEINFO(ui, NativeStringAttribute);
-
 NativeStringAttribute::NativeStringAttribute() {}
 
 NativeStringAttribute::~NativeStringAttribute() {}
+
+#ifndef FLUTTER_NO_DART_VM
+IMPLEMENT_WRAPPERTYPEINFO(ui, NativeStringAttribute);
 
 void NativeStringAttribute::initSpellOutStringAttribute(
     Dart_Handle string_attribute_handle,
@@ -51,6 +54,7 @@ void NativeStringAttribute::initLocaleStringAttribute(
   locale_attribute->locale = std::move(locale);
   native_string_attribute->attribute_ = locale_attribute;
 }
+#endif  // FLUTTER_NO_DART_VM
 
 const StringAttributePtr NativeStringAttribute::GetAttribute() const {
   return attribute_;

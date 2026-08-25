@@ -10,12 +10,16 @@
 #include "flutter/lib/ui/painting/multi_frame_codec.h"
 #include "flutter/lib/ui/painting/single_frame_codec.h"
 #include "flutter/lib/ui/ui_dart_state.h"
+#ifndef FLUTTER_NO_DART_VM
 #include "third_party/tonic/dart_binding_macros.h"
 #include "third_party/tonic/logging/dart_invoke.h"
+#endif
 
 namespace flutter {
 
+#ifndef FLUTTER_NO_DART_VM
 IMPLEMENT_WRAPPERTYPEINFO(ui, ImageDescriptor);
+#endif
 
 const SkImageInfo ImageDescriptor::CreateImageInfo() const {
   FML_DCHECK(generator_);
@@ -37,6 +41,7 @@ ImageDescriptor::ImageDescriptor(sk_sp<SkData> buffer,
       image_info_(CreateImageInfo()),
       row_bytes_(std::nullopt) {}
 
+#ifndef FLUTTER_NO_DART_VM
 Dart_Handle ImageDescriptor::initEncoded(Dart_Handle descriptor_handle,
                                          ImmutableBuffer* immutable_buffer,
                                          Dart_Handle callback_handle) {
@@ -77,7 +82,9 @@ Dart_Handle ImageDescriptor::initEncoded(Dart_Handle descriptor_handle,
 
   return Dart_Null();
 }
+#endif  // FLUTTER_NO_DART_VM
 
+#ifndef FLUTTER_NO_DART_VM
 void ImageDescriptor::initRaw(Dart_Handle descriptor_handle,
                               const fml::RefPtr<ImmutableBuffer>& data,
                               int width,
@@ -106,7 +113,9 @@ void ImageDescriptor::initRaw(Dart_Handle descriptor_handle,
       row_bytes == -1 ? std::nullopt : std::optional<size_t>(row_bytes));
   descriptor->AssociateWithDartWrapper(descriptor_handle);
 }
+#endif  // FLUTTER_NO_DART_VM
 
+#ifndef FLUTTER_NO_DART_VM
 void ImageDescriptor::instantiateCodec(Dart_Handle codec_handle,
                                        int target_width,
                                        int target_height) {
@@ -120,6 +129,7 @@ void ImageDescriptor::instantiateCodec(Dart_Handle codec_handle,
   }
   ui_codec->AssociateWithDartWrapper(codec_handle);
 }
+#endif  // FLUTTER_NO_DART_VM
 
 sk_sp<SkImage> ImageDescriptor::image() const {
   return generator_->GetImage();

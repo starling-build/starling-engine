@@ -22,6 +22,7 @@ struct ShellArgs {
         on_create_rasterizer(std::move(p_on_create_rasterizer)) {}
 };
 
+#ifndef FLUTTER_NO_DART_VM
 EmbedderEngine::EmbedderEngine(
     std::unique_ptr<EmbedderThreadHost> thread_host,
     const flutter::TaskRunners& task_runners,
@@ -37,6 +38,7 @@ EmbedderEngine::EmbedderEngine(
                                               on_create_platform_view,
                                               on_create_rasterizer)),
       external_texture_resolver_(std::move(external_texture_resolver)) {}
+#endif  // FLUTTER_NO_DART_VM
 
 EmbedderEngine::EmbedderEngine(
     std::unique_ptr<EmbedderThreadHost> thread_host,
@@ -48,7 +50,9 @@ EmbedderEngine::EmbedderEngine(
     std::unique_ptr<RuntimeControllerInterface> runtime_controller)
     : thread_host_(std::move(thread_host)),
       task_runners_(task_runners),
+#ifndef FLUTTER_NO_DART_VM
       run_configuration_(RunConfiguration::InferFromSettings(settings)),
+#endif
       shell_args_(std::make_unique<ShellArgs>(settings,
                                               on_create_platform_view,
                                               on_create_rasterizer)),
@@ -67,6 +71,13 @@ bool EmbedderEngine::LaunchShell() {
     FML_DLOG(ERROR) << "Shell already initialized";
   }
 
+#ifdef FLUTTER_NO_DART_VM
+  // Shell::Create is the Dart entry point; this build has only the Swift one.
+  FML_LOG(ERROR) << "This engine was built without the Dart VM. Use "
+                    "LaunchShellSwift.";
+  shell_args_.reset();
+  return false;
+#else
   shell_ = Shell::Create(
       flutter::PlatformData(), task_runners_, shell_args_->settings,
       shell_args_->on_create_platform_view, shell_args_->on_create_rasterizer);
@@ -76,6 +87,7 @@ bool EmbedderEngine::LaunchShell() {
   shell_args_.reset();
 
   return IsValid();
+#endif  // FLUTTER_NO_DART_VM
 }
 
 bool EmbedderEngine::LaunchShellSwift() {
@@ -147,11 +159,16 @@ void EmbedderEngine::CollectThreadHost() {
 }
 
 bool EmbedderEngine::RunRootIsolate() {
+#ifdef FLUTTER_NO_DART_VM
+  // No VM, no root isolate. The Swift path launches through LaunchShellSwift.
+  return false;
+#else
   if (!IsValid() || !run_configuration_.IsValid()) {
     return false;
   }
   shell_->RunEngine(std::move(run_configuration_));
   return true;
+#endif  // FLUTTER_NO_DART_VM
 }
 
 bool EmbedderEngine::IsValid() const {
@@ -364,12 +381,14 @@ bool EmbedderEngine::PostTaskOnEngineManagedNativeThreads(
   trampoline(kFlutterNativeThreadTypePlatform,
              task_runners.GetPlatformTaskRunner());
 
+#ifndef FLUTTER_NO_DART_VM
   // Post the task to all worker threads (only when Dart VM is available).
   auto vm = shell_->GetDartVM();
   if (vm) {
     vm->GetConcurrentMessageLoop()->PostTaskToAllWorkers(
         [closure]() { closure(kFlutterNativeThreadTypeWorker); });
   }
+#endif  // FLUTTER_NO_DART_VM
 
   return true;
 }

@@ -6,7 +6,9 @@
 #define FLUTTER_LIB_UI_SEMANTICS_SEMANTICS_FLAGS_H_
 
 #include "flutter/lib/ui/dart_wrapper.h"
+#ifndef FLUTTER_NO_DART_VM
 #include "third_party/tonic/dart_library_natives.h"
+#endif
 
 namespace flutter {
 
@@ -60,6 +62,8 @@ class NativeSemanticsFlags
 
   //----------------------------------------------------------------------------
   /// The init method
+#ifndef FLUTTER_NO_DART_VM
+  // The dart:ui constructor.
   static void initSemanticsFlags(Dart_Handle semantics_flags_handle,
                                  int isChecked,
                                  int isSelected,
@@ -84,6 +88,8 @@ class NativeSemanticsFlags
                                  bool isLink,
                                  bool isSlider,
                                  bool isKeyboardKey);
+#endif  // FLUTTER_NO_DART_VM
+
 
   //----------------------------------------------------------------------------
   /// Returns the c++ representataion of SemanticsFlags.

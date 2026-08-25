@@ -4,7 +4,11 @@
 
 #include "flutter/runtime/runtime_controller_interface.h"
 
+#ifdef FLUTTER_NO_DART_VM
+#include "flutter/runtime/dart_stubs.h"
+#else
 #include "flutter/runtime/isolate_configuration.h"
+#endif
 
 namespace flutter {
 

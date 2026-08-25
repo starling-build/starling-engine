@@ -59,6 +59,8 @@ Engine::Engine(
   pointer_data_dispatcher_ = dispatcher_maker(*this);
 }
 
+#ifndef FLUTTER_NO_DART_VM
+// The constructor that builds a Dart RuntimeController.
 Engine::Engine(Delegate& delegate,
                const PointerDataDispatcherMaker& dispatcher_maker,
                DartVM& vm,
@@ -109,7 +111,10 @@ Engine::Engine(Delegate& delegate,
           settings_.enable_flutter_gpu               // enable impeller
       });
 }
+#endif  // FLUTTER_NO_DART_VM
 
+#ifndef FLUTTER_NO_DART_VM
+// Spawning a second isolate from this engine.
 std::unique_ptr<Engine> Engine::Spawn(
     Delegate& delegate,
     const PointerDataDispatcherMaker& dispatcher_maker,
@@ -151,6 +156,7 @@ std::unique_ptr<Engine> Engine::Spawn(
   result->asset_manager_ = asset_manager_;
   return result;
 }
+#endif  // FLUTTER_NO_DART_VM
 
 Engine::~Engine() = default;
 
@@ -206,6 +212,7 @@ bool Engine::UpdateAssetManager(
   return true;
 }
 
+#ifndef FLUTTER_NO_DART_VM
 bool Engine::Restart(RunConfiguration configuration) {
   TRACE_EVENT0("flutter", "Engine::Restart");
   if (!configuration.IsValid()) {
@@ -220,7 +227,9 @@ bool Engine::Restart(RunConfiguration configuration) {
   UpdateAssetManager(nullptr);
   return Run(std::move(configuration)) == Engine::RunStatus::Success;
 }
+#endif  // FLUTTER_NO_DART_VM
 
+#ifndef FLUTTER_NO_DART_VM
 Engine::RunStatus Engine::Run(RunConfiguration configuration) {
   if (!configuration.IsValid()) {
     FML_LOG(ERROR) << "Engine run configuration was invalid.";
@@ -299,6 +308,7 @@ Engine::RunStatus Engine::Run(RunConfiguration configuration) {
 
   return Engine::RunStatus::Success;
 }
+#endif  // FLUTTER_NO_DART_VM
 
 void Engine::BeginFrame(fml::TimePoint frame_time, uint64_t frame_number) {
   runtime_controller_->BeginFrame(frame_time, frame_number);

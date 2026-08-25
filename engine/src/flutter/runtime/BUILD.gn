@@ -50,6 +50,37 @@ source_set("dart_plugin_registrant") {
   ]
 }
 
+# The RuntimeControllerInterface on its own, with no VM behind it.
+#
+# SwiftRuntimeController implements this interface and includes nothing else
+# from //flutter/runtime, so with flutter_enable_dart = false the Swift path
+# depends on these two files instead of on a target whose deps are libdart,
+# tonic and dart_io_api.
+source_set("runtime_interface") {
+  sources = [
+    "dart_stubs.h",
+    # Plain plumbing that happens to live in //flutter/runtime: the platform
+    # data the shell is constructed with, the delegate interface the engine
+    # implements, and the service-protocol handler registry.
+    "platform_data.cc",
+    "platform_data.h",
+    "runtime_controller_interface.cc",
+    "runtime_controller_interface.h",
+    "runtime_delegate.cc",
+    "runtime_delegate.h",
+    "service_protocol.cc",
+    "service_protocol.h",
+  ]
+
+  public_configs = [ "//flutter:config" ]
+
+  public_deps = [
+    "//flutter/fml",
+    "//flutter/lib/ui:ui_plumbing",
+    "//flutter/third_party/rapidjson",
+  ]
+}
+
 source_set("runtime") {
   sources = [
     "dart_isolate.cc",
