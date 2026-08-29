@@ -2934,8 +2934,19 @@ void fl_drm_view_run(FlDrmView* view) {
       gcd_main_queue_drain(nullptr);
     }
 
-    // Compute timeout: time until next UI task deadline, or 100ms if idle.
-    int timeout_ms = 100;
+    // How long to wait: until the next UI task is due, or indefinitely.
+    //
+    // This used to floor at 100ms, which was a poll -- ten wakeups a second
+    // on a desktop with nothing to do. The floor looked load-bearing and is
+    // not: BOTH wake sources below are complete. A UI task post signals the
+    // wakeup pipe (see the post site), and libdispatch signals the main-queue
+    // handle for main-queue TIMERS as well as for enqueued work -- measured
+    // directly on this box at 400.6 ms for a 400 ms timer, which is what lets
+    // `DispatchQueue.main.asyncAfter` and every DispatchSourceTimer in the
+    // shell still fire on time with no timeout here at all. The Win32 and GTK
+    // hosts were moved onto that handle already (`flgtk_host.c` waits on it
+    // with no timeout and says so); this host was simply never brought along.
+    int timeout_ms = -1;
     {
       std::lock_guard<std::mutex> lock(view->ui_mutex);
       if (!view->ui_tasks.empty()) {
@@ -2948,8 +2959,11 @@ void fl_drm_view_run(FlDrmView* view) {
         if (earliest <= now) {
           timeout_ms = 0;
         } else {
+          // The real deadline, not a capped one: a task due in ten seconds
+          // should cost one wakeup, not a hundred.
           uint64_t delta = (earliest - now) / 1000000;
-          timeout_ms = static_cast<int>(delta < 100 ? delta : 100);
+          timeout_ms = static_cast<int>(
+              delta > 3600000 ? 3600000 : (delta == 0 ? 1 : delta));
         }
       }
     }
@@ -3004,9 +3018,15 @@ void fl_drm_view_run(FlDrmView* view) {
 void fl_drm_view_shutdown(FlDrmView* view) {
   if (view) {
     view->running = false;
-    // The loop blocks indefinitely now, so `running = false` alone would
-    // never be noticed and the join below it would hang.
+    // BOTH loops block indefinitely now, so `running = false` alone would
+    // never be noticed: the platform thread would sit in epoll_wait and the
+    // UI thread in poll, and the join between them would hang.
     WakePlatformThread();
+    if (view->ui_wakeup_write_fd >= 0) {
+      const uint8_t byte = 1;
+      ssize_t ignored = write(view->ui_wakeup_write_fd, &byte, 1);
+      (void)ignored;
+    }
   }
 }
 
