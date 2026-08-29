@@ -36,6 +36,33 @@
 
 #include "embedder.h"
 
+// ─── Waking the platform thread ─────────────────────────────────────────────
+// The platform loop used to POLL. It woke every 16ms and re-read a handful of
+// flags that signal handlers and other threads set — and on an idle desktop
+// the answer was always "nothing happened", sixty times a second, forever.
+// That poll was the single largest thing the desktop cost while doing nothing.
+//
+// Every one of those setters writes a byte here instead. The read end sits in
+// the loop's epoll set, so the loop blocks until there is genuinely something
+// to do and the flag is seen the moment it is set rather than up to 16ms
+// later. `write` is async-signal-safe, which is what lets the signal handlers
+// use it; a full pipe means a wakeup is already pending, so a failed write is
+// success.
+//
+// There is no lost-wakeup race: every setter writes AFTER setting its flag,
+// and the loop drains the pipe BEFORE re-checking the flags, so a byte that
+// arrives during a pass is still waiting at the next epoll_wait.
+static int g_platform_wakeup[2] = {-1, -1};
+
+static void WakePlatformThread() {
+  if (g_platform_wakeup[1] < 0) {
+    return;
+  }
+  const uint8_t byte = 1;
+  ssize_t ignored = write(g_platform_wakeup[1], &byte, 1);
+  (void)ignored;
+}
+
 // Screenshot flags — set by SIGUSR1 or fl_drm_view_request_screenshot().
 // The primary flag is consumed by RunCaptureHooks; the secondary flag by
 // present_view for non-primary outputs (each output's next present writes
@@ -45,10 +72,12 @@ static volatile sig_atomic_t g_secondary_screenshot = 0;
 static void ScreenshotSignalHandler(int) {
   g_screenshot_requested = 1;
   g_secondary_screenshot = 1;
+  WakePlatformThread();
 }
 void fl_drm_view_request_screenshot(void) {
   g_screenshot_requested = 1;
   g_secondary_screenshot = 1;
+  WakePlatformThread();
 }
 
 // ─── X11 screen capture ─────────────────────────────────────────────────────
@@ -73,7 +102,10 @@ static std::atomic<int> g_x11_cap_frames{0};
 // (tools/shell-drive.py in starling-os) rebuild a constant-rate video with
 // held frames.
 static volatile sig_atomic_t g_record_toggle = 0;
-static void RecordSignalHandler(int) { g_record_toggle = 1; }
+static void RecordSignalHandler(int) {
+  g_record_toggle = 1;
+  WakePlatformThread();
+}
 
 // Screen-recording API (fl_drm_view_recording_*) — same capture machinery as
 // the signal toggle above, but full-resolution and delivered to a registered
@@ -142,6 +174,7 @@ static void VtReleaseHandler(int) {
   // Acknowledge the VT release to the kernel.
   if (g_vt_tty_fd >= 0) ioctl(g_vt_tty_fd, VT_RELDISP, 1);
   g_vt_pending_release = 1;
+  WakePlatformThread();
 }
 
 static void VtAcquireHandler(int) {
@@ -151,6 +184,7 @@ static void VtAcquireHandler(int) {
   // Acknowledge the VT acquire to the kernel.
   if (g_vt_tty_fd >= 0) ioctl(g_vt_tty_fd, VT_RELDISP, VT_ACKACQ);
   g_vt_pending_acquire = 1;
+  WakePlatformThread();
 }
 
 // Seat for the running view (libseat mode) — the VT-switch request and the
@@ -1647,6 +1681,7 @@ static void BeginOutputRemoval(FlDrmView* view, size_t index) {
       std::lock_guard<std::mutex> lock(b->view->teardown_mutex);
       b->view->pending_teardowns.push_back({b->index, b->view_id});
     }
+    WakePlatformThread();
     delete b;
   };
   fprintf(stderr, "[DrmView] Removing view %lld (output %zu)\n",
@@ -2581,6 +2616,13 @@ static void* PlatformThreadEntry(void* arg) {
     epoll_ctl(view->epoll_fd, EPOLL_CTL_ADD, seat_fd, &ev);
   }
 
+  // What replaced the 16ms poll: anything that used to be discovered by
+  // re-reading a flag now arrives here.
+  if (g_platform_wakeup[0] >= 0) {
+    ev.data.fd = g_platform_wakeup[0];
+    epoll_ctl(view->epoll_fd, EPOLL_CTL_ADD, g_platform_wakeup[0], &ev);
+  }
+
   int timer_fd = view->task_runner.timer_fd();
   if (timer_fd >= 0) {
     ev.data.fd = timer_fd;
@@ -2690,10 +2732,18 @@ static void* PlatformThreadEntry(void* arg) {
 
     view->task_runner.DrainExpired(view->engine);
 
-    // 2. epoll_wait — 16ms (~60Hz) when active, 100ms when VT inactive.
+    // 2. epoll_wait — blocks until there is work. Every source that can
+    // produce any is in the set: the DRM fd, libinput, the seat, the task
+    // runner's timerfd, the registered external fds, and the wakeup pipe that
+    // carries everything a signal handler or another thread sets. A timeout
+    // here would be a poll, and a poll is what this loop used to be.
+    //
+    // If the pipe could not be created there is nothing to carry those flags,
+    // so fall back to the old poll rather than block forever holding them.
     struct epoll_event events[8];
-    int nfds = epoll_wait(view->epoll_fd, events, 8,
-                           view->vt_active ? 16 : 100);
+    const int timeout_ms =
+        (g_platform_wakeup[0] >= 0) ? -1 : (view->vt_active ? 16 : 100);
+    int nfds = epoll_wait(view->epoll_fd, events, 8, timeout_ms);
 
     for (int i = 0; i < nfds; i++) {
       int fd = events[i].data.fd;
@@ -2723,6 +2773,12 @@ static void* PlatformThreadEntry(void* arg) {
         // Runs the libseat callbacks — pending flags are consumed at the
         // top of the next loop iteration.
         view->seat.Dispatch();
+      } else if (fd == g_platform_wakeup[0]) {
+        // Someone set a flag. Draining is all that is needed -- the checks at
+        // the top of the next iteration are what act on it.
+        uint8_t drain[64];
+        while (read(g_platform_wakeup[0], drain, sizeof(drain)) > 0) {
+        }
       } else if (fd == timer_fd) {
         view->task_runner.DrainExpired(view->engine);
       } else if (fd == hotplug_fd) {
@@ -2781,6 +2837,14 @@ static void DrainUITasks(FlDrmView* view) {
 }
 
 void fl_drm_view_run(FlDrmView* view) {
+  // Before the handlers, which write to it.
+  if (g_platform_wakeup[0] < 0 && pipe(g_platform_wakeup) == 0) {
+    for (int i = 0; i < 2; i++) {
+      int flags = fcntl(g_platform_wakeup[i], F_GETFL, 0);
+      fcntl(g_platform_wakeup[i], F_SETFL, flags | O_NONBLOCK);
+      fcntl(g_platform_wakeup[i], F_SETFD, FD_CLOEXEC);
+    }
+  }
   signal(SIGUSR1, ScreenshotSignalHandler);
   signal(SIGRTMIN + 1, RecordSignalHandler);
 
@@ -2940,6 +3004,9 @@ void fl_drm_view_run(FlDrmView* view) {
 void fl_drm_view_shutdown(FlDrmView* view) {
   if (view) {
     view->running = false;
+    // The loop blocks indefinitely now, so `running = false` alone would
+    // never be noticed and the join below it would hang.
+    WakePlatformThread();
   }
 }
 
@@ -3197,6 +3264,7 @@ void fl_drm_view_recording_start_cropped(FlDrmView* view, int downscale_shift,
   g_api_record_texture.store(-1, std::memory_order_relaxed);
   fl_drm_view_recording_set_crop(x, y, w, h);
   g_api_record_start.store(downscale_shift, std::memory_order_release);
+  WakePlatformThread();
   if (view && view->engine) {
     FlutterEngineScheduleFrame(view->engine);
   }
@@ -3217,6 +3285,7 @@ void fl_drm_view_recording_start_texture(FlDrmView* view, int downscale_shift,
   // origin is meaningless for a texture source.
   fl_drm_view_recording_set_crop(0, 0, w, h);
   g_api_record_start.store(downscale_shift, std::memory_order_release);
+  WakePlatformThread();
   if (view && view->engine) {
     FlutterEngineScheduleFrame(view->engine);
   }
@@ -3238,6 +3307,7 @@ void fl_drm_view_recording_set_window_rect(int x, int y, int w, int h) {
 
 void fl_drm_view_recording_stop(FlDrmView* view) {
   g_api_record_stop.store(true, std::memory_order_release);
+  WakePlatformThread();
   if (view && view->engine) {
     FlutterEngineScheduleFrame(view->engine);
   }
