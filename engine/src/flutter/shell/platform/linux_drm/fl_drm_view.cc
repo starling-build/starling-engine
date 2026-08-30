@@ -12,6 +12,7 @@
 #include <GLES2/gl2.h>
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <deque>
 #include <errno.h>
@@ -3335,6 +3336,201 @@ void fl_drm_view_recording_stop(FlDrmView* view) {
 
 int fl_drm_view_recording_active(void) {
   return g_api_recording.load(std::memory_order_acquire) ? 1 : 0;
+}
+
+// ─── One-shot window capture ────────────────────────────────────────────────
+// See the header for why this is neither the recording session nor the
+// framebuffer readback. The shape below is the recording sink's texture blit
+// with the session removed: resolve through the compositor's own callback,
+// scale-blit into a scratch renderbuffer, read it straight back.
+namespace {
+
+constexpr int kCapOnceOk = 0;
+constexpr int kCapOnceBadArgs = -1;
+constexpr int kCapOnceNoEngine = -2;
+constexpr int kCapOncePostFailed = -3;
+constexpr int kCapOnceTimeout = -4;
+constexpr int kCapOnceNoContext = -5;
+constexpr int kCapOnceNoEs3 = -6;
+constexpr int kCapOnceNoTexture = -7;
+
+// GL enums this path needs that GLES2/gl2.h does not carry (all ES3, which
+// the blit gate already guarantees).
+constexpr GLenum GL_READ_FRAMEBUFFER_BINDING_ = 0x8CAA;
+constexpr GLenum GL_DRAW_FRAMEBUFFER_BINDING_ = 0x8CA6;
+constexpr GLenum GL_PIXEL_PACK_BUFFER_BINDING_ = 0x88ED;
+constexpr GLenum GL_PACK_ROW_LENGTH_ = 0x0D02;
+
+struct CaptureOnceReq {
+  FlDrmView* view = nullptr;
+  int64_t texture_id = 0;
+  int content_top_down = 0;
+  int out_w = 0;
+  int out_h = 0;
+  uint8_t* dst = nullptr;
+
+  std::mutex m;
+  std::condition_variable cv;
+  bool done = false;
+  // The waiter gave up. The worker holds |m| for the WHOLE of its run, so a
+  // waiter that reaches its timeout has proved the worker never started and
+  // |dst| — which by then may be freed — is untouched and will stay so.
+  // Whichever side observes this owns the delete; the other never looks
+  // again.
+  bool abandoned = false;
+  int result = kCapOnceTimeout;
+};
+
+// Raster thread. Takes and releases the GL context itself: the engine clears
+// it between frames, and a posted task usually lands between frames.
+int RunCaptureOnce(CaptureOnceReq* req) {
+  FlDrmView* v = req->view;
+  if (!v->egl.MakeCurrent()) {
+    return kCapOnceNoContext;
+  }
+  const Es3Fns& es3 = GetEs3Fns();
+  if (!es3.blit) {
+    v->egl.ClearCurrent();
+    return kCapOnceNoEs3;
+  }
+
+  // The same resolver compositing uses, on the same thread it uses it from —
+  // which is also what refreshes a dirty client texture. The difference from
+  // the present path is that a failure is REPORTED here: an agent asking for
+  // a window that has no buffer must hear that, not receive a black frame it
+  // will go on to reason about.
+  FlutterOpenGLTexture tex = {};
+  if (!v->external_texture_callback ||
+      !v->external_texture_callback(v->external_texture_user_data,
+                                    req->texture_id, 0, 0, &tex) ||
+      tex.name == 0 || tex.width == 0 || tex.height == 0) {
+    v->egl.ClearCurrent();
+    return kCapOnceNoTexture;
+  }
+  const int tw = static_cast<int>(tex.width);
+  const int th = static_cast<int>(tex.height);
+  const int ow = req->out_w;
+  const int oh = req->out_h;
+
+  // Skia owns this context across frames and caches its bindings, and unlike
+  // the recording path we are not running inside a present where the engine
+  // is about to reset them. Put back everything we touch — a stray pack
+  // buffer left bound would send the NEXT readback into our scratch instead
+  // of the caller's memory.
+  GLint prev_read = 0, prev_draw = 0, prev_rb = 0, prev_pack_buf = 0;
+  GLint prev_align = 4, prev_row_len = 0;
+  glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING_, &prev_read);
+  glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING_, &prev_draw);
+  glGetIntegerv(GL_RENDERBUFFER_BINDING, &prev_rb);
+  glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING_, &prev_pack_buf);
+  glGetIntegerv(GL_PACK_ALIGNMENT, &prev_align);
+  glGetIntegerv(GL_PACK_ROW_LENGTH_, &prev_row_len);
+
+  // Raster-thread only, so unsynchronized statics are safe — the same
+  // assumption the recording sink's src_fbo makes one function up.
+  static GLuint cap_src_fbo = 0, cap_dst_fbo = 0, cap_rbo = 0;
+  static int cap_w = 0, cap_h = 0;
+  if (cap_src_fbo == 0) glGenFramebuffers(1, &cap_src_fbo);
+  if (cap_dst_fbo == 0) glGenFramebuffers(1, &cap_dst_fbo);
+  if (cap_rbo == 0) glGenRenderbuffers(1, &cap_rbo);
+  if (cap_w != ow || cap_h != oh) {
+    glBindRenderbuffer(GL_RENDERBUFFER, cap_rbo);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8_, ow, oh);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER_, cap_dst_fbo);
+    glFramebufferRenderbuffer(GL_DRAW_FRAMEBUFFER_, GL_COLOR_ATTACHMENT0,
+                              GL_RENDERBUFFER, cap_rbo);
+    cap_w = ow;
+    cap_h = oh;
+  }
+
+  glBindFramebuffer(GL_DRAW_FRAMEBUFFER_, cap_dst_fbo);
+  glBindFramebuffer(GL_READ_FRAMEBUFFER_, cap_src_fbo);
+  glFramebufferTexture2D(GL_READ_FRAMEBUFFER_, GL_COLOR_ATTACHMENT0,
+                         GL_TEXTURE_2D, static_cast<GLuint>(tex.name), 0);
+  // Wayland client buffers are top-down (straight blit); first-party children
+  // render into GL FBOs, bottom-up (flip) — the same split the scene handles
+  // as flipTextureY, so that either way glReadPixels below yields top-down.
+  if (req->content_top_down) {
+    es3.blit(0, 0, tw, th, 0, 0, ow, oh, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+  } else {
+    es3.blit(0, th, tw, 0, 0, 0, ow, oh, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+  }
+
+  // Straight into the caller's buffer. A blocking read is the point here —
+  // there is no present to stall, and the PBO ring the recording path uses
+  // buys latency hiding that a one-shot has nothing to hide behind.
+  glBindFramebuffer(GL_READ_FRAMEBUFFER_, cap_dst_fbo);
+  glBindBuffer(GL_PIXEL_PACK_BUFFER_, 0);
+  glPixelStorei(GL_PACK_ALIGNMENT, 4);
+  glPixelStorei(GL_PACK_ROW_LENGTH_, 0);
+  glReadPixels(0, 0, ow, oh, GL_RGBA, GL_UNSIGNED_BYTE, req->dst);
+
+  glPixelStorei(GL_PACK_ROW_LENGTH_, prev_row_len);
+  glPixelStorei(GL_PACK_ALIGNMENT, prev_align);
+  glBindBuffer(GL_PIXEL_PACK_BUFFER_, static_cast<GLuint>(prev_pack_buf));
+  glBindFramebuffer(GL_READ_FRAMEBUFFER_, static_cast<GLuint>(prev_read));
+  glBindFramebuffer(GL_DRAW_FRAMEBUFFER_, static_cast<GLuint>(prev_draw));
+  glBindRenderbuffer(GL_RENDERBUFFER, static_cast<GLuint>(prev_rb));
+  v->egl.ClearCurrent();
+  return kCapOnceOk;
+}
+
+void CaptureOnceTask(void* user_data) {
+  auto* req = static_cast<CaptureOnceReq*>(user_data);
+  std::unique_lock<std::mutex> lock(req->m);
+  if (req->abandoned) {
+    lock.unlock();
+    delete req;
+    return;
+  }
+  req->result = RunCaptureOnce(req);
+  req->done = true;
+  req->cv.notify_all();
+}
+
+}  // namespace
+
+int fl_drm_view_capture_texture_once(FlDrmView* view, int64_t texture_id,
+                                     int content_top_down, int out_w,
+                                     int out_h, uint8_t* dst, int dst_len) {
+  if (!view || !dst || out_w <= 0 || out_h <= 0 ||
+      static_cast<int64_t>(dst_len) <
+          static_cast<int64_t>(out_w) * out_h * 4) {
+    return kCapOnceBadArgs;
+  }
+  if (!view->engine) {
+    return kCapOnceNoEngine;
+  }
+
+  auto* req = new CaptureOnceReq();
+  req->view = view;
+  req->texture_id = texture_id;
+  req->content_top_down = content_top_down;
+  req->out_w = out_w;
+  req->out_h = out_h;
+  req->dst = dst;
+
+  std::unique_lock<std::mutex> lock(req->m);
+  if (FlutterEnginePostRenderThreadTask(view->engine, CaptureOnceTask, req) !=
+      kSuccess) {
+    lock.unlock();
+    delete req;
+    return kCapOncePostFailed;
+  }
+  // The predicate form re-acquires |m| before returning, so a worker already
+  // running cannot be cut off mid-readback — this waits it out and reports
+  // its result. A timeout that does fire has therefore proved the worker
+  // never took the lock, which is what makes abandoning safe.
+  if (!req->cv.wait_for(lock, std::chrono::seconds(1),
+                        [req] { return req->done; })) {
+    req->abandoned = true;
+    lock.unlock();
+    return kCapOnceTimeout;
+  }
+  const int rc = req->result;
+  lock.unlock();
+  delete req;
+  return rc;
 }
 
 uint32_t fl_drm_view_get_refresh_mhz(FlDrmView* view) {
