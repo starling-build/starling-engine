@@ -276,6 +276,9 @@ void FlDrmCursor::LoadShape(FlCursorShape shape) {
     current_shape_ = shape;
     hot_x_ = def.hot_x;
     hot_y_ = def.hot_y;
+    // Drop the guest's image: a snapshot taken from here on is a baked shape
+    // and must not carry a picture that is no longer on the plane.
+    custom_rgba_.reset();
   }
 }
 
@@ -292,6 +295,81 @@ void FlDrmCursor::SetShape(FlCursorShape shape) {
     uint32_t handle = gbm_bo_get_handle(cursor_bo_).u32;
     drmModeSetCursor(drm_fd_, crtc_id_, handle, kCursorWidth, kCursorHeight);
     drmModeMoveCursor(drm_fd_, crtc_id_, last_x_ - hot_x_, last_y_ - hot_y_);
+  }
+}
+
+void FlDrmCursor::SetImage(const uint8_t* bgra, int width, int height,
+                           int hot_x, int hot_y) {
+  if (!cursor_bo_) {
+    return;
+  }
+
+  uint32_t buf[kCursorWidth * kCursorHeight];
+  memset(buf, 0, sizeof(buf));
+  auto rgba = std::make_shared<std::vector<uint8_t>>(
+      kCursorWidth * kCursorHeight * 4, 0);
+
+  // width/height 0 means "no cursor": both buffers stay transparent, which
+  // hides the sprite without taking the plane down.
+  if (bgra && width > 0 && height > 0) {
+    const uint32_t max_rows = static_cast<uint32_t>(height) < kCursorHeight
+                                  ? static_cast<uint32_t>(height)
+                                  : kCursorHeight;
+    const uint32_t max_cols = static_cast<uint32_t>(width) < kCursorWidth
+                                  ? static_cast<uint32_t>(width)
+                                  : kCursorWidth;
+    for (uint32_t y = 0; y < max_rows; y++) {
+      for (uint32_t x = 0; x < max_cols; x++) {
+        const uint8_t* src =
+            bgra + (static_cast<size_t>(y) * static_cast<size_t>(width) + x) * 4;
+        const uint32_t b = src[0], g = src[1], r = src[2], a = src[3];
+        // The plane's default blend mode is pre-multiplied and the source is
+        // straight alpha. The baked shapes never had to think about this —
+        // they are alpha 0 or 255 — but a real cursor has soft edges, and
+        // skipping this haloes every one of them.
+        buf[y * kCursorWidth + x] = (a << 24) | (((r * a + 127) / 255) << 16) |
+                                    (((g * a + 127) / 255) << 8) |
+                                    ((b * a + 127) / 255);
+        // The software copy stays straight-alpha: both capture paths blend
+        // it that way (DrawCursorGpu sets GL_SRC_ALPHA/GL_ONE_MINUS_SRC_ALPHA).
+        uint8_t* dst = rgba->data() + (y * kCursorWidth + x) * 4;
+        dst[0] = static_cast<uint8_t>(r);
+        dst[1] = static_cast<uint8_t>(g);
+        dst[2] = static_cast<uint8_t>(b);
+        dst[3] = static_cast<uint8_t>(a);
+      }
+    }
+  }
+
+  gbm_bo_write(cursor_bo_, buf, sizeof(buf));
+
+  int px, py;
+  {
+    std::lock_guard<std::mutex> lk(state_mu_);
+    current_shape_ = FlCursorShape::kCustom;
+    // Clamped to the plane: a hot-spot outside it would anchor the sprite
+    // somewhere the pointer is not.
+    hot_x_ = hot_x < 0 ? 0
+                       : (hot_x >= static_cast<int>(kCursorWidth)
+                              ? static_cast<int>(kCursorWidth) - 1
+                              : hot_x);
+    hot_y_ = hot_y < 0 ? 0
+                       : (hot_y >= static_cast<int>(kCursorHeight)
+                              ? static_cast<int>(kCursorHeight) - 1
+                              : hot_y);
+    custom_rgba_ = rgba;
+    image_gen_++;
+    px = last_x_ - hot_x_;
+    py = last_y_ - hot_y_;
+  }
+
+  // Re-bind and re-anchor exactly as SetShape does: the pixels must take
+  // effect without waiting for motion, and every image brings its own
+  // hot-spot, which the legacy cursor API cannot express any other way.
+  if (visible_ && cursor_bo_) {
+    uint32_t handle = gbm_bo_get_handle(cursor_bo_).u32;
+    drmModeSetCursor(drm_fd_, crtc_id_, handle, kCursorWidth, kCursorHeight);
+    drmModeMoveCursor(drm_fd_, crtc_id_, px, py);
   }
 }
 
@@ -365,6 +443,8 @@ FlCursorSnapshot FlDrmCursor::Snapshot() const {
   s.x = last_x_ - hot_x_;
   s.y = last_y_ - hot_y_;
   s.shape = current_shape_;
+  s.image = custom_rgba_;
+  s.image_gen = image_gen_;
   return s;
 }
 
@@ -385,6 +465,22 @@ void FlDrmCursor::RenderShapeRGBA(FlCursorShape shape, uint8_t* rgba) {
       p[3] = 0xFF;
     }
   }
+}
+
+void FlDrmCursor::RenderSnapshotRGBA(const FlCursorSnapshot& cur,
+                                     uint8_t* rgba) {
+  if (cur.shape == FlCursorShape::kCustom) {
+    const size_t want = kCursorWidth * kCursorHeight * 4;
+    if (cur.image && cur.image->size() == want) {
+      memcpy(rgba, cur.image->data(), want);
+    } else {
+      // A custom cursor with no image behind it draws nothing, rather than
+      // an arrow the guest never asked for.
+      memset(rgba, 0, want);
+    }
+    return;
+  }
+  RenderShapeRGBA(cur.shape, rgba);
 }
 
 }  // namespace flutter

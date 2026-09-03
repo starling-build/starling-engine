@@ -477,9 +477,15 @@ static void BlendCursorOverlay(uint8_t* frame,
                                const flutter::FlCursorSnapshot& cur) {
   static uint8_t bitmap[64 * 64 * 4];
   static int bitmap_shape = -1;
-  if (bitmap_shape != static_cast<int>(cur.shape)) {
-    flutter::FlDrmCursor::RenderShapeRGBA(cur.shape, bitmap);
+  static uint32_t bitmap_gen = 0;
+  // A custom image is one shape whose pixels change, so the generation is
+  // part of the key — without it the first guest cursor would be cached
+  // forever.
+  if (bitmap_shape != static_cast<int>(cur.shape) ||
+      bitmap_gen != cur.image_gen) {
+    flutter::FlDrmCursor::RenderSnapshotRGBA(cur, bitmap);
     bitmap_shape = static_cast<int>(cur.shape);
+    bitmap_gen = cur.image_gen;
   }
   const uint32_t size = 64u >> shift;
   for (uint32_t ty = 0; ty < size; ty++) {
@@ -488,14 +494,21 @@ static void BlendCursorOverlay(uint8_t* frame,
     for (uint32_t tx = 0; tx < size; tx++) {
       const int fx = (cur.x >> shift) + static_cast<int>(tx);
       if (fx < 0 || fx >= static_cast<int>(fw)) continue;
-      // Nearest sample; the bitmaps are hard-edged (opaque or clear), so
-      // alpha is a mask, not a blend factor.
+      // Nearest sample. The baked bitmaps are hard-edged, so alpha is a
+      // mask for them; a guest's cursor has soft edges and needs the blend.
       const uint8_t* s = bitmap + (((ty << shift) * 64 + (tx << shift)) * 4);
-      if (s[3] == 0) continue;
+      const uint32_t a = s[3];
+      if (a == 0) continue;
       uint8_t* d = frame + (static_cast<size_t>(fy) * fw + fx) * 4;
-      d[0] = s[0];
-      d[1] = s[1];
-      d[2] = s[2];
+      if (a == 255) {
+        d[0] = s[0];
+        d[1] = s[1];
+        d[2] = s[2];
+      } else {
+        for (int c = 0; c < 3; c++) {
+          d[c] = static_cast<uint8_t>((s[c] * a + d[c] * (255 - a) + 127) / 255);
+        }
+      }
     }
   }
 }
@@ -635,6 +648,7 @@ static void DrawCursorGpu(const flutter::FlCursorSnapshot& cur,
   static GLuint prog = 0, tex = 0;
   static GLint u_rect = -1;
   static int tex_shape = -1;
+  static uint32_t tex_gen = 0;
   static bool failed = false;
   if (failed) return;
   const ZeroCopyFns& fns = GetZeroCopyFns();
@@ -712,9 +726,9 @@ static void DrawCursorGpu(const flutter::FlCursorSnapshot& cur,
   glGetIntegerv(GL_BLEND_DST_ALPHA, &bda);
 
   glBindTexture(GL_TEXTURE_2D, tex);
-  if (tex_shape != static_cast<int>(cur.shape)) {
+  if (tex_shape != static_cast<int>(cur.shape) || tex_gen != cur.image_gen) {
     static uint8_t bitmap[64 * 64 * 4];
-    flutter::FlDrmCursor::RenderShapeRGBA(cur.shape, bitmap);
+    flutter::FlDrmCursor::RenderSnapshotRGBA(cur, bitmap);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 64, 64, 0, GL_RGBA,
                  GL_UNSIGNED_BYTE, bitmap);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
@@ -722,6 +736,7 @@ static void DrawCursorGpu(const flutter::FlCursorSnapshot& cur,
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     tex_shape = static_cast<int>(cur.shape);
+    tex_gen = cur.image_gen;
   }
 
   glUseProgram(prog);
@@ -3223,6 +3238,15 @@ void fl_drm_view_set_cursor_shape(FlDrmView* view, int shape) {
     return;
   }
   view->cursor.SetShape(static_cast<flutter::FlCursorShape>(shape));
+}
+
+void fl_drm_view_set_cursor_image(FlDrmView* view, const uint8_t* bgra,
+                                  int width, int height, int hot_x,
+                                  int hot_y) {
+  if (!view) {
+    return;
+  }
+  view->cursor.SetImage(bgra, width, height, hot_x, hot_y);
 }
 
 void fl_drm_view_set_output_present_callback(FlDrmView* view,

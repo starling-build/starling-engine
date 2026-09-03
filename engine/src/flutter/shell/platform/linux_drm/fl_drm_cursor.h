@@ -8,7 +8,9 @@
 #include <gbm.h>
 #include <stdint.h>
 
+#include <memory>
 #include <mutex>
+#include <vector>
 
 namespace flutter {
 
@@ -22,6 +24,10 @@ enum class FlCursorShape : int {
   kResizeNWSE = 4, // Diagonal: top-left  / bottom-right corners.
   kText = 5,       // I-beam (over editable text).
   kPointer = 6,    // Pointing hand (over links).
+  // A bitmap the caller supplied (a VM guest's own cursor). Has no number in
+  // the public C enum: it is reached through fl_drm_view_set_cursor_image(),
+  // never by index, and any SetShape() call replaces it.
+  kCustom = 7,
 };
 
 // Cursor state at one instant, for software compositing (screen recording
@@ -34,6 +40,16 @@ struct FlCursorSnapshot {
   int x = 0;
   int y = 0;
   FlCursorShape shape = FlCursorShape::kDefault;
+  // For kCustom: the image current when the snapshot was taken, 64x64
+  // straight-alpha RGBA, top-down. Immutable and shared, because a snapshot
+  // outlives the instant it was taken — the recorder carries it to its
+  // writer thread, where the live cursor may already be something else.
+  // Null for the baked shapes, which are drawn from the enum.
+  std::shared_ptr<const std::vector<uint8_t>> image;
+  // Bumps on every SetImage. The overlay paths cache one rendered bitmap and
+  // key it on the shape; kCustom is one shape with changing pixels, so they
+  // key on this too.
+  uint32_t image_gen = 0;
 };
 
 class FlDrmCursor {
@@ -62,6 +78,16 @@ class FlDrmCursor {
   // already current — only rewrites the GBM buffer on change.
   void SetShape(FlCursorShape shape);
 
+  // Put a caller-supplied bitmap on the plane. |bgra| is |width|x|height|
+  // straight-alpha BGRA8888, tightly packed, clipped to the 64x64 plane;
+  // the KMS blend is pre-multiplied, so this pre-multiplies on copy. The
+  // hot-spot is in image pixels. A width or height of 0 hides the sprite by
+  // uploading a transparent image. Unlike SetShape there is no early-out:
+  // two successive images with the same dimensions are two different
+  // pictures.
+  void SetImage(const uint8_t* bgra, int width, int height, int hot_x,
+                int hot_y);
+
   // Consistent copy of the current cursor state. Safe from any thread —
   // position moves on the platform thread, shape on the UI thread, and the
   // recorder reads from its writer thread.
@@ -70,6 +96,11 @@ class FlDrmCursor {
   // Render |shape|'s bitmap as straight RGBA (64×64×4, top-down, alpha 0
   // where the cursor buffer is transparent) for software compositing.
   static void RenderShapeRGBA(FlCursorShape shape, uint8_t* rgba);
+
+  // The same, for whatever |cur| was showing — a baked shape or the custom
+  // image it carries. This is what the capture paths want: they hold a
+  // snapshot, not the live cursor.
+  static void RenderSnapshotRGBA(const FlCursorSnapshot& cur, uint8_t* rgba);
 
  private:
   // Write the bitmap for |shape| into cursor_bo_.
@@ -95,6 +126,12 @@ class FlDrmCursor {
   // new hot-spot without waiting for the next motion event.
   int last_x_ = 0;
   int last_y_ = 0;
+
+  // The current custom image as straight RGBA, handed out by Snapshot().
+  // Replaced wholesale on every SetImage, never mutated in place, so a
+  // snapshot taken earlier keeps the picture it saw.
+  std::shared_ptr<const std::vector<uint8_t>> custom_rgba_;
+  uint32_t image_gen_ = 0;
 
   static constexpr uint32_t kCursorWidth = 64;
   static constexpr uint32_t kCursorHeight = 64;
