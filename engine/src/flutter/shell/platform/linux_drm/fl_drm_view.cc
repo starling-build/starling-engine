@@ -3064,6 +3064,10 @@ int fl_drm_view_capture_active(void) {
   return g_x11_cap_frames.load(std::memory_order_relaxed) > 0 ? 1 : 0;
 }
 
+int fl_drm_view_capture_frames_left(void) {
+  return g_x11_cap_frames.load(std::memory_order_relaxed);
+}
+
 int fl_drm_view_read_capture(int x, int y, int w, int h, uint8_t* dst,
                              int dst_len) {
   if (!dst || w <= 0 || h <= 0) {
