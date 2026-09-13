@@ -2578,6 +2578,17 @@ void fl_drm_view_set_output_layout(FlDrmView* view,
 }
 
 // Platform thread entry — runs epoll loop for libinput, engine tasks, external fds.
+static void DrainUITasks(FlDrmView* view);
+
+// The platform loop. Since the UI/platform merge (see fl_drm_view_run) it
+// runs ON THE MAIN THREAD: the framework's frames, input, the embedder's
+// external fds (the X11 and Wayland servers), the engine's platform tasks,
+// AND the GCD main queue all execute here, one after another. Before the
+// merge the main queue was drained by the main thread while this loop ran
+// on a background pthread — every DispatchQueue.main.async { setState } in
+// the shell then raced the frame being built here, and under load the
+// build owner's arrays were torn apart mid-growth (wmbench's stress pass
+// crashed the shell in swift_retain). One thread, no race, by construction.
 static void* PlatformThreadEntry(void* arg) {
   auto* view = static_cast<FlDrmView*>(arg);
 
@@ -2660,6 +2671,25 @@ static void* PlatformThreadEntry(void* arg) {
 
   fprintf(stderr, "[DrmView] Platform thread entering epoll loop\n");
 
+  // Merged UI loop: the GCD main queue's readiness handle and the UI task
+  // wakeup pipe join the epoll set, so main-queue work and UI tasks are run
+  // from this loop — only when this loop IS the main thread (libdispatch's
+  // main queue may be drained from the main thread alone).
+  const bool on_main_thread = pthread_equal(pthread_self(), view->main_thread) != 0;
+  int gcd_fd = -1;
+  if (on_main_thread && gcd_get_main_queue_handle) {
+    gcd_fd = gcd_get_main_queue_handle();
+    if (gcd_fd >= 0) {
+      ev.data.fd = gcd_fd;
+      epoll_ctl(view->epoll_fd, EPOLL_CTL_ADD, gcd_fd, &ev);
+    }
+    if (view->ui_wakeup_read_fd >= 0) {
+      ev.data.fd = view->ui_wakeup_read_fd;
+      epoll_ctl(view->epoll_fd, EPOLL_CTL_ADD, view->ui_wakeup_read_fd, &ev);
+    }
+  }
+  fprintf(stderr, "[DrmView] platform loop on %s thread (GCD fd=%d)\n",
+          on_main_thread ? "the MAIN" : "a background", gcd_fd);
   while (view->running) {
     // Handle VT switch events from signal handlers.
     if (g_vt_pending_release) {
@@ -2757,8 +2787,29 @@ static void* PlatformThreadEntry(void* arg) {
     // If the pipe could not be created there is nothing to carry those flags,
     // so fall back to the old poll rather than block forever holding them.
     struct epoll_event events[8];
-    const int timeout_ms =
+    if (on_main_thread) {
+      DrainUITasks(view);
+      if (gcd_main_queue_drain) gcd_main_queue_drain(nullptr);
+    }
+    int timeout_ms =
         (g_platform_wakeup[0] >= 0) ? -1 : (view->vt_active ? 16 : 100);
+    if (on_main_thread) {
+      // A UI task due later than now bounds the wait, as the old main loop's
+      // poll did; one due now makes it zero.
+      std::lock_guard<std::mutex> lock(view->ui_mutex);
+      if (!view->ui_tasks.empty()) {
+        uint64_t now = FlutterEngineGetCurrentTime();
+        uint64_t earliest = UINT64_MAX;
+        for (auto& t : view->ui_tasks)
+          if (t.target_time_nanos < earliest) earliest = t.target_time_nanos;
+        int ui_ms = 0;
+        if (earliest > now) {
+          uint64_t delta = (earliest - now) / 1000000;
+          ui_ms = static_cast<int>(delta > 3600000 ? 3600000 : (delta == 0 ? 1 : delta));
+        }
+        if (timeout_ms < 0 || ui_ms < timeout_ms) timeout_ms = ui_ms;
+      }
+    }
     int nfds = epoll_wait(view->epoll_fd, events, 8, timeout_ms);
 
     for (int i = 0; i < nfds; i++) {
@@ -2795,6 +2846,15 @@ static void* PlatformThreadEntry(void* arg) {
         uint8_t drain[64];
         while (read(g_platform_wakeup[0], drain, sizeof(drain)) > 0) {
         }
+      } else if (gcd_fd >= 0 && fd == gcd_fd) {
+        uint64_t v = 0;
+        ssize_t r = read(gcd_fd, &v, sizeof(v));
+        (void)r;
+        if (gcd_main_queue_drain) gcd_main_queue_drain(nullptr);
+      } else if (view->ui_wakeup_read_fd >= 0 && fd == view->ui_wakeup_read_fd) {
+        char buf[64];
+        while (read(view->ui_wakeup_read_fd, buf, sizeof(buf)) > 0) {}
+        DrainUITasks(view);
       } else if (fd == timer_fd) {
         view->task_runner.DrainExpired(view->engine);
       } else if (fd == hotplug_fd) {
@@ -2871,8 +2931,13 @@ void fl_drm_view_run(FlDrmView* view) {
   view->running = true;
   InitGCDIntegration();
 
-  // Start platform thread (epoll loop for input + engine platform tasks).
-  pthread_create(&view->platform_thread, nullptr, PlatformThreadEntry, view);
+  // One thread. The platform loop runs on this, the main thread (called
+  // below, after the optional secondary test threads are up), and drains
+  // the GCD main queue itself — see PlatformThreadEntry. It used to be a
+  // background pthread while this thread drained the main queue: two
+  // threads in the framework's object tree, and the shell's main-queue
+  // setStates raced the frames.
+  view->platform_thread = pthread_self();
 
   // FLUTTER_DRM_SECONDARY_TEST: drive each secondary output with a color
   // cycle from its own thread/context. Exercises the multi-CRTC flip demux
@@ -2937,85 +3002,7 @@ void fl_drm_view_run(FlDrmView* view) {
   // Main thread: drain GCD main queue + UI engine tasks.
   // GCD handles @MainActor / async-await continuations.
   // UI engine tasks handle onBeginFrame, widget building, layout, paint.
-  int gcd_fd = gcd_get_main_queue_handle ? gcd_get_main_queue_handle() : -1;
-
-  fprintf(stderr, "[DrmView] Main thread entering UI loop (GCD fd=%d)\n", gcd_fd);
-
-  while (view->running) {
-    // Drain UI engine tasks.
-    DrainUITasks(view);
-
-    // Drain GCD main queue (handles @MainActor, DispatchQueue.main.async, etc.)
-    if (gcd_main_queue_drain) {
-      gcd_main_queue_drain(nullptr);
-    }
-
-    // How long to wait: until the next UI task is due, or indefinitely.
-    //
-    // This used to floor at 100ms, which was a poll -- ten wakeups a second
-    // on a desktop with nothing to do. The floor looked load-bearing and is
-    // not: BOTH wake sources below are complete. A UI task post signals the
-    // wakeup pipe (see the post site), and libdispatch signals the main-queue
-    // handle for main-queue TIMERS as well as for enqueued work -- measured
-    // directly on this box at 400.6 ms for a 400 ms timer, which is what lets
-    // `DispatchQueue.main.asyncAfter` and every DispatchSourceTimer in the
-    // shell still fire on time with no timeout here at all. The Win32 and GTK
-    // hosts were moved onto that handle already (`flgtk_host.c` waits on it
-    // with no timeout and says so); this host was simply never brought along.
-    int timeout_ms = -1;
-    {
-      std::lock_guard<std::mutex> lock(view->ui_mutex);
-      if (!view->ui_tasks.empty()) {
-        uint64_t now = FlutterEngineGetCurrentTime();
-        uint64_t earliest = UINT64_MAX;
-        for (auto& t : view->ui_tasks) {
-          if (t.target_time_nanos < earliest)
-            earliest = t.target_time_nanos;
-        }
-        if (earliest <= now) {
-          timeout_ms = 0;
-        } else {
-          // The real deadline, not a capped one: a task due in ten seconds
-          // should cost one wakeup, not a hundred.
-          uint64_t delta = (earliest - now) / 1000000;
-          timeout_ms = static_cast<int>(
-              delta > 3600000 ? 3600000 : (delta == 0 ? 1 : delta));
-        }
-      }
-    }
-
-    // Poll on the wakeup pipe (signaled when UI tasks are posted) AND the
-    // GCD main queue handle, so a DispatchQueue.main.async from another
-    // thread wakes this loop instead of waiting out the timeout. The handle
-    // is an eventfd the drain callback does NOT reset — it must be read()
-    // once signaled, or it stays readable and the poll spins. Reading it
-    // BEFORE the next drain means an enqueue after the read re-signals the
-    // fd: a wakeup can be spurious but never lost.
-    if (view->ui_wakeup_read_fd >= 0 || gcd_fd >= 0) {
-      struct pollfd pfds[2] = {
-          {view->ui_wakeup_read_fd, POLLIN, 0},  // fd -1: poll ignores it
-          {gcd_fd, POLLIN, 0},
-      };
-      poll(pfds, 2, timeout_ms);
-      // Drain the pipe
-      if (pfds[0].revents & POLLIN) {
-        char buf[64];
-        while (read(view->ui_wakeup_read_fd, buf, sizeof(buf)) > 0) {}
-      }
-      // Clear the GCD eventfd; the drain at the top of the loop does the work.
-      if (pfds[1].revents & POLLIN) {
-        uint64_t v = 0;
-        ssize_t r = read(gcd_fd, &v, sizeof(v));
-        (void)r;
-      }
-    } else {
-      if (timeout_ms > 0) usleep(timeout_ms * 1000);
-      else usleep(1000);
-    }
-  }
-
-  // The platform thread has stopped draining DRM events (or is about to),
-  // so wake any presenter still blocked on an in-flight flip before joining.
+  PlatformThreadEntry(view);   // returns when view->running goes false
   for (auto& res : view->output_resources) {
     if (res.chain) {
       res.chain->AbortFlipWait();
@@ -3027,7 +3014,6 @@ void fl_drm_view_run(FlDrmView* view) {
   view->secondary_test_threads.clear();
 
   // Wait for platform thread to exit.
-  pthread_join(view->platform_thread, nullptr);
   fprintf(stderr, "[DrmView] UI loop exited\n");
 }
 
