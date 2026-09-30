@@ -330,6 +330,16 @@ bool SwiftRuntimeController::DispatchPlatformMessage(
       if (channel == "flutter/keydata") {
         response->Complete(
             std::make_unique<fml::DataMapping>(std::vector<uint8_t>{0}));
+      } else if (channel == "flutter/keyevent") {
+        // The raw-key channel's responder (macOS FlutterChannelKeyResponder,
+        // and its siblings) reads an EMPTY reply as "handled", which stops
+        // the key from ever reaching the text-input plugin: with nothing
+        // on this channel in Swift mode, every typed character was taken
+        // and no IME, dead key or plain letter got through to a
+        // TextInput client. Say what is true instead.
+        static const std::string kNotHandled = "{\"handled\":false}";
+        response->Complete(std::make_unique<fml::DataMapping>(
+            std::vector<uint8_t>(kNotHandled.begin(), kNotHandled.end())));
       } else {
         response->CompleteEmpty();
       }
