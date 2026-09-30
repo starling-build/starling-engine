@@ -14,6 +14,8 @@
 
 #include "flutter/fml/closure.h"
 #include "flutter/fml/mapping.h"
+#include "flutter/fml/memory/ref_ptr.h"
+#include "flutter/fml/task_runner.h"
 #include "flutter/fml/time/time_delta.h"
 #include "flutter/fml/time/time_point.h"
 #include "flutter/lib/ui/semantics/semantics_node.h"
@@ -33,6 +35,7 @@ namespace flutter {
 
 class IsolateConfiguration;
 class NativeAssetsManager;
+class RuntimeDelegate;
 struct Settings;
 
 //------------------------------------------------------------------------------
@@ -136,6 +139,14 @@ class RuntimeControllerInterface {
   /// @brief      Dispatch the specified platform message to running runtime.
   virtual bool DispatchPlatformMessage(
       std::unique_ptr<PlatformMessage> message) = 0;
+
+  /// Where the runtime sends platform messages of its own (the framework's
+  /// `PlatformDispatcher.sendPlatformMessage`), and the task runner they
+  /// must be handed over on. The Engine installs this once it owns the
+  /// controller; a runtime that creates its own delegate (Dart) ignores it.
+  virtual void SetPlatformMessageSink(
+      RuntimeDelegate* delegate,
+      fml::RefPtr<fml::TaskRunner> ui_task_runner) {}
 
   //--------------------------------------------------------------------------
   // Lifecycle - Dart-specific with sensible defaults

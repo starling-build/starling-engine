@@ -90,6 +90,18 @@ class SwiftRuntimeController final : public RuntimeControllerInterface {
   bool DispatchPlatformMessage(
       std::unique_ptr<PlatformMessage> message) override;
 
+  void SetPlatformMessageSink(
+      RuntimeDelegate* delegate,
+      fml::RefPtr<fml::TaskRunner> ui_task_runner) override;
+
+  /// Called by Swift (through the pointer handed over in
+  /// `platform_message_sender_ready`): a message from the framework to
+  /// the platform, answered via `platform_message_response`.
+  void SendPlatformMessage(const char* channel,
+                           const uint8_t* data,
+                           size_t data_len,
+                           int32_t response_id);
+
   //--------------------------------------------------------------------------
   // RuntimeControllerInterface — Lifecycle overrides
   //--------------------------------------------------------------------------
@@ -107,6 +119,9 @@ class SwiftRuntimeController final : public RuntimeControllerInterface {
   // Maps response IDs to pending platform message responses.
   std::unordered_map<int32_t, fml::RefPtr<PlatformMessageResponse>>
       pending_responses_;
+
+  RuntimeDelegate* delegate_ = nullptr;
+  fml::RefPtr<fml::TaskRunner> ui_task_runner_;
 };
 
 }  // namespace flutter

@@ -24,11 +24,23 @@ _src_root_dir = os.path.join(_script_dir, '..', '..')
 
 
 def get_clang_version():
-  clang_executable = str(
-      os.path.join(_src_root_dir, 'flutter', 'buildtools', 'mac-x64', 'clang', 'bin', 'clang++')
-  )
-  version = subprocess.check_output([clang_executable, '--version'])
-  return version.splitlines()[0]
+  # The toolchain that can run here: an Apple Silicon checkout has both
+  # mac-arm64 and mac-x64, and without Rosetta the x64 clang cannot be
+  # executed at all ("Bad CPU type in executable").
+  import platform
+  arches = ['mac-arm64', 'mac-x64'] if platform.machine() == 'arm64' else ['mac-x64', 'mac-arm64']
+  for arch in arches:
+    clang_executable = str(
+        os.path.join(_src_root_dir, 'flutter', 'buildtools', arch, 'clang', 'bin', 'clang++')
+    )
+    if not os.path.exists(clang_executable):
+      continue
+    try:
+      version = subprocess.check_output([clang_executable, '--version'])
+      return version.splitlines()[0]
+    except OSError:
+      continue
+  return b'clang (version unknown)'
 
 
 def main():

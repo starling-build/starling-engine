@@ -57,6 +57,12 @@ Engine::Engine(
       task_runners_(task_runners),
       weak_factory_(this) {
   pointer_data_dispatcher_ = dispatcher_maker(*this);
+  // A runtime built outside the Engine (SwiftRuntimeController) has no
+  // way to reach the platform until it is told where messages go.
+  if (runtime_controller_) {
+    runtime_controller_->SetPlatformMessageSink(
+        this, task_runners_.GetUITaskRunner());
+  }
 }
 
 #ifndef FLUTTER_NO_DART_VM

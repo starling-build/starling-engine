@@ -5,11 +5,81 @@
 #include "flutter/lib/ui/swift/include/swift_runtime_controller.h"
 
 #include "flutter/fml/logging.h"
+#include "flutter/fml/make_copyable.h"
+#include "flutter/lib/ui/window/platform_message_response.h"
+#include "flutter/runtime/runtime_delegate.h"
 
 #include <cstring>
 #include <vector>
 
 namespace flutter {
+
+namespace {
+
+// The reply to a message the framework sent: whatever thread the platform
+// completes it on, the bytes reach Swift on the UI task runner, where the
+// framework expects to run.
+class SwiftPlatformMessageResponse : public PlatformMessageResponse {
+ public:
+  SwiftPlatformMessageResponse(SwiftRuntimeCallbacks callbacks,
+                               int32_t response_id,
+                               fml::RefPtr<fml::TaskRunner> ui_task_runner)
+      : callbacks_(callbacks),
+        response_id_(response_id),
+        ui_task_runner_(std::move(ui_task_runner)) {}
+
+  void Complete(std::unique_ptr<fml::Mapping> data) override {
+    if (is_complete_) {
+      return;
+    }
+    is_complete_ = true;
+    Deliver(std::move(data));
+  }
+
+  void CompleteEmpty() override {
+    if (is_complete_) {
+      return;
+    }
+    is_complete_ = true;
+    Deliver(nullptr);
+  }
+
+ private:
+  void Deliver(std::unique_ptr<fml::Mapping> data) {
+    if (!callbacks_.platform_message_response || response_id_ == 0) {
+      return;
+    }
+    auto callbacks = callbacks_;
+    auto id = response_id_;
+    auto task = fml::MakeCopyable([callbacks, id, data = std::move(data)]() {
+      const uint8_t* ptr = data ? data->GetMapping() : nullptr;
+      size_t len = data ? data->GetSize() : 0;
+      callbacks.platform_message_response(callbacks.context, id, ptr, len);
+    });
+    if (ui_task_runner_ && !ui_task_runner_->RunsTasksOnCurrentThread()) {
+      ui_task_runner_->PostTask(std::move(task));
+    } else {
+      task();
+    }
+  }
+
+  SwiftRuntimeCallbacks callbacks_;
+  int32_t response_id_;
+  fml::RefPtr<fml::TaskRunner> ui_task_runner_;
+
+  FML_FRIEND_MAKE_REF_COUNTED(SwiftPlatformMessageResponse);
+};
+
+void SendThunk(void* sender,
+               const char* channel,
+               const uint8_t* data,
+               size_t data_len,
+               int32_t response_id) {
+  static_cast<SwiftRuntimeController*>(sender)->SendPlatformMessage(
+      channel, data, data_len, response_id);
+}
+
+}  // namespace
 
 SwiftRuntimeController::SwiftRuntimeController(SwiftRuntimeCallbacks callbacks)
     : callbacks_(callbacks) {}
@@ -265,6 +335,56 @@ bool SwiftRuntimeController::DispatchPlatformMessage(
   }
 
   return true;
+}
+
+//------------------------------------------------------------------------------
+// Outbound platform messages
+//------------------------------------------------------------------------------
+
+void SwiftRuntimeController::SetPlatformMessageSink(
+    RuntimeDelegate* delegate,
+    fml::RefPtr<fml::TaskRunner> ui_task_runner) {
+  delegate_ = delegate;
+  ui_task_runner_ = std::move(ui_task_runner);
+  if (callbacks_.platform_message_sender_ready) {
+    callbacks_.platform_message_sender_ready(callbacks_.context, this,
+                                             &SendThunk);
+  }
+}
+
+void SwiftRuntimeController::SendPlatformMessage(const char* channel,
+                                                 const uint8_t* data,
+                                                 size_t data_len,
+                                                 int32_t response_id) {
+  if (!delegate_ || !channel) {
+    if (callbacks_.platform_message_response && response_id != 0) {
+      callbacks_.platform_message_response(callbacks_.context, response_id,
+                                           nullptr, 0);
+    }
+    return;
+  }
+  fml::RefPtr<PlatformMessageResponse> response;
+  if (response_id != 0) {
+    response = fml::MakeRefCounted<SwiftPlatformMessageResponse>(
+        callbacks_, response_id, ui_task_runner_);
+  }
+  std::unique_ptr<PlatformMessage> message;
+  if (data && data_len > 0) {
+    message = std::make_unique<PlatformMessage>(
+        std::string(channel), fml::MallocMapping::Copy(data, data_len),
+        response);
+  } else {
+    message = std::make_unique<PlatformMessage>(std::string(channel), response);
+  }
+  auto* delegate = delegate_;
+  if (ui_task_runner_ && !ui_task_runner_->RunsTasksOnCurrentThread()) {
+    ui_task_runner_->PostTask(
+        fml::MakeCopyable([delegate, message = std::move(message)]() mutable {
+          delegate->HandlePlatformMessage(std::move(message));
+        }));
+  } else {
+    delegate->HandlePlatformMessage(std::move(message));
+  }
 }
 
 //------------------------------------------------------------------------------
