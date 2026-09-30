@@ -14,6 +14,9 @@
 #include "txt/font_collection.h"
 #include "txt/platform.h"
 #include "txt/typeface_font_asset_provider.h"
+#include "flutter/fml/icu_util.h"
+
+#include <cstdio>
 
 #include <memory>
 #include <mutex>
@@ -191,6 +194,21 @@ bool LoadFontFromFile(const char* path, const char* family_name) {
 
 void ClearFontFamilyCache() {
   SwiftFontCollectionManager::Instance().ClearCache();
+}
+
+bool InitializeICU(const char* icu_data_path) {
+  if (icu_data_path == nullptr || icu_data_path[0] == '\0') {
+    return false;
+  }
+  // fml::icu::InitializeICU FML_CHECKs (aborts) on an unreadable path; a
+  // host that guessed a path wrong deserves `false`, not a dead process.
+  FILE* probe = std::fopen(icu_data_path, "rb");
+  if (probe == nullptr) {
+    return false;
+  }
+  std::fclose(probe);
+  fml::icu::InitializeICU(std::string(icu_data_path));
+  return true;
 }
 
 // Expose the font collection for use by other bridges (like ParagraphBuilder)
