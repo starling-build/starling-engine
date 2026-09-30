@@ -279,16 +279,18 @@ bool SwiftRuntimeController::DispatchPlatformMessage(
   // This avoids MainActor isolation issues in DRM mode where the
   // UI task runner is not the main thread.
   if (channel == "flutter/keydata" && callbacks_.dispatch_key_data) {
+    bool handled = false;
     if (message->hasData()) {
       const fml::MallocMapping& data = message->data();
-      callbacks_.dispatch_key_data(callbacks_.context,
-                                    data.GetMapping(), data.GetSize());
+      handled = callbacks_.dispatch_key_data(callbacks_.context,
+                                             data.GetMapping(), data.GetSize());
     }
-    // Auto-complete response with "not handled" (0).
+    // The reply is what the embedder's keyboard manager waits for: 1 keeps
+    // the event from the text-input plugin, 0 lets it insert text.
     if (auto response = message->response()) {
       if (!response->is_complete()) {
-        response->Complete(
-            std::make_unique<fml::DataMapping>(std::vector<uint8_t>{0}));
+        response->Complete(std::make_unique<fml::DataMapping>(
+            std::vector<uint8_t>{static_cast<uint8_t>(handled ? 1 : 0)}));
       }
     }
     return true;
