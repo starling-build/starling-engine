@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "src/core/SkTypefaceCache.h"
 #include "include/font_collection_bridge.h"
 #include "include/swift_bridge_engine_registry.h"
 
@@ -102,6 +103,27 @@ class SwiftFontCollectionManager {
   std::shared_ptr<txt::FontCollection> font_collection_;
   sk_sp<txt::DynamicFontManager> dynamic_font_manager_;
 };
+
+/// This library carries its own copy of Skia, and so its own
+/// `SkTypefaceCache::NewTypefaceID()` counter, starting at 1 — as does the
+/// engine's copy. A typeface this library creates (every font an app loads
+/// through LoadFontFromFile) therefore gets the same uniqueID as some
+/// typeface the engine created (a system font the chrome draws with). The
+/// engine's rasterizer keys its glyph strikes by that ID plus the size, so
+/// the moment both typefaces are drawn at one device size, the second one
+/// is painted from the first one's strike: glyphs of the wrong face, or
+/// the right glyphs at the wrong advances. Seen as "Liberation Sans at
+/// exactly 14pt draws stretched" — 14 being the chrome's body size — and
+/// as a 10.5pt document paragraph rendering as accented capitals. Moving
+/// this copy's counter far past anything the engine will ever allocate
+/// keeps the two ID spaces apart. Runs once, at load, before any typeface
+/// exists.
+static const bool g_typeface_ids_offset = [] {
+  for (int i = 0; i < (1 << 22); ++i) {
+    SkTypefaceCache::NewTypefaceID();
+  }
+  return true;
+}();
 
 /// The dynamic font manager installed in the *engine's* font collection —
 /// the one ParagraphBuilder resolves families through, and therefore the one
