@@ -8,6 +8,7 @@ import("$_skia_root/gn/shared_sources.gni")
 import("$_skia_root/gn/skia.gni")
 import("$_skia_root/gn/toolchain/wasm.gni")
 import("$_skia_root/modules/pathops/pathops.gni")
+import("$_skia_root/gn/pdf.gni")
 import("flutter_defines.gni")
 
 if (is_fuchsia) {
@@ -631,6 +632,19 @@ optional("xml") {
 
 import("$_skia_root/gn/codec.gni")
 
+# Starling: Skia's PDF backend, for document export (flutter/lib/ui/swift's
+# pdf_bridge). Renderer-independent — it needs neither GPU path — and off
+# in stock Flutter (tools/gn sets skia_enable_pdf). Mirrors upstream's
+# optional("pdf"); pathops is already part of the main component here.
+optional("pdf") {
+  enabled = skia_use_zlib && skia_enable_pdf
+  public_defines = [ "SK_SUPPORT_PDF" ]
+  deps = [ "//flutter/third_party/zlib" ]
+  public = skia_pdf_public
+  sources = skia_pdf_sources
+  sources_when_disabled = [ "$_skia_root/src/pdf/SkDocument_PDF_None.cpp" ]
+}
+
 skia_component("skia") {
   public_configs = [ ":skia_public" ]
   configs = skia_library_configs
@@ -649,6 +663,7 @@ skia_component("skia") {
     ":fontmgr_win",
     ":gpu",
     ":jpeg_encode",
+    ":pdf",
     ":png_encode",
     ":webp_encode",
     ":xps",

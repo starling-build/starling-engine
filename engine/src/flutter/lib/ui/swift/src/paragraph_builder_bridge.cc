@@ -29,6 +29,9 @@
 
 namespace flutter::swift_bridge {
 
+// font_collection_bridge.cc
+std::shared_ptr<txt::FontCollection> GetSwiftBridgeFontCollection();
+
 namespace {
 
 const double kTextHeightNone = 0.0;
@@ -286,7 +289,9 @@ std::shared_ptr<txt::FontCollection> GetFontCollection() {
   if (ptr) {
     return *static_cast<std::shared_ptr<txt::FontCollection>*>(ptr);
   }
-  return nullptr;
+  // No engine (a headless converter, a test): the bridge's own collection
+  // — the one LoadFontFromFile fills — lays text out just as well.
+  return GetSwiftBridgeFontCollection();
 }
 
 }  // namespace
