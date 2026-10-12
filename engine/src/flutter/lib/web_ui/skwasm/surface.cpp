@@ -173,6 +173,36 @@ void Surface::renderPicturesOnWorker(sk_sp<DisplayList>* pictures,
   skwasm_resolveAndPostImages(this, imageBitmapArray, rasterStart, callbackId);
 }
 
+// Starling. The same route as rasterizeImageOnWorker, and for its reason:
+// SkImage::readPixels does not work on these images, so the image is drawn
+// to the scratch canvas and read back with glReadPixels.
+sk_sp<SkImage> Surface::rasterCopy(SkImage* image) {
+  if (!_isInitialized) {
+    _init();
+  }
+  if (!_glContext || image->width() <= 0 || image->height() <= 0) {
+    return nullptr;
+  }
+  SkImageInfo info = SkImageInfo::Make(
+      image->width(), image->height(), SkColorType::kRGBA_8888_SkColorType,
+      SkAlphaType::kPremul_SkAlphaType, SkColorSpace::MakeSRGB());
+  size_t bytesPerRow = 4 * image->width();
+  sk_sp<SkData> data =
+      SkData::MakeUninitialized(info.computeByteSize(bytesPerRow));
+  _resizeSurface(image->width(), image->height());
+  makeCurrent(_glContext);
+  auto canvas = _surface->getCanvas();
+  canvas->drawColor(SK_ColorTRANSPARENT, SkBlendMode::kSrc);
+  canvas->save();
+  canvas->scale(1, -1);
+  canvas->drawImage(image, 0, -_canvasHeight);
+  canvas->restore();
+  _grContext->flush(_surface.get());
+  emscripten_glReadPixels(0, 0, image->width(), image->height(), GL_RGBA,
+                          GL_UNSIGNED_BYTE, data->writable_data());
+  return SkImages::RasterFromData(info, std::move(data), bytesPerRow);
+}
+
 // Worker thread only
 void Surface::rasterizeImageOnWorker(SkImage* image,
                                      ImageByteFormat format,

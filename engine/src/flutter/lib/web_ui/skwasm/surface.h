@@ -68,6 +68,11 @@ class Surface {
   void onRenderComplete(uint32_t callbackId, SkwasmObject imageBitmap);
   void onRasterizeComplete(uint32_t callbackId, SkData* data);
 
+  // Starling: a raster copy of an image that lives in this surface's GL
+  // context (a texture source), for a consumer that has no GPU — the PDF
+  // backend. Single-threaded skwasm only: it draws on the calling thread.
+  sk_sp<SkImage> rasterCopy(SkImage* image);
+
   // Any thread
   std::unique_ptr<TextureSourceWrapper> createTextureSourceWrapper(
       SkwasmObject textureSource);

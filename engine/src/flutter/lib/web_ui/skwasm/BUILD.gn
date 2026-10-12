@@ -21,6 +21,7 @@ template("skwasm_variant") {
       "live_objects.h",
       "paint.cpp",
       "path.cpp",
+      "pdf.cpp",  # Starling: PDF export
       "picture.cpp",
       "shaders.cpp",
       "skwasm_support.h",
