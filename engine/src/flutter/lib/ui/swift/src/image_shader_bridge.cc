@@ -3,6 +3,8 @@
 // found in the LICENSE file.
 
 #include "include/image_shader_bridge.h"
+
+#include "third_party/skia/include/core/SkImage.h"
 #include "include/image_bridge.h"
 
 // Flutter engine headers (only in .cc file)
@@ -136,7 +138,12 @@ bool ImageShaderBridge::InitWithImage(const ImageBridge* image_bridge,
       static_cast<const sk_sp<const flutter::DlImage>*>(dl_image_ptr);
   impl_->image = *image_sp;
 
-  if (!impl_->image || !impl_->image->isUIThreadSafe()) {
+  // Starling: a raster image is as safe as a thread-safe one — it owns no
+  // texture for another thread to free. Images decoded with no engine
+  // running (a headless export) are that kind, and could never be a shader.
+  auto skia = impl_->image ? impl_->image->skia_image() : nullptr;
+  bool raster = skia && !skia->isTextureBacked();
+  if (!impl_->image || !(impl_->image->isUIThreadSafe() || raster)) {
     impl_->image.reset();
     return false;
   }

@@ -24,6 +24,7 @@
 #include <cmath>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -31,6 +32,13 @@ namespace flutter::swift_bridge {
 
 // font_collection_bridge.cc
 std::shared_ptr<txt::FontCollection> GetSwiftBridgeFontCollection();
+
+// canvas_bridge.cc
+bool DecodeTextPaint(flutter::DlPaint& paint,
+                     const void* paint_data,
+                     const void* shader_ptr,
+                     const void* color_filter_ptr,
+                     const void* image_filter_ptr);
 
 namespace {
 
@@ -299,6 +307,8 @@ std::shared_ptr<txt::FontCollection> GetFontCollection() {
 // Pimpl implementation holding the actual Flutter types.
 struct ParagraphBuilderImpl {
   std::unique_ptr<txt::ParagraphBuilder> builder;
+  // Starling: SetForegroundPaint's, until the next PushStyle takes it.
+  std::optional<flutter::DlPaint> foreground_paint;
 
   explicit ParagraphBuilderImpl(std::unique_ptr<txt::ParagraphBuilder> b)
       : builder(std::move(b)) {}
@@ -523,12 +533,17 @@ void ParagraphBuilderBridge::PushStyle(
 
   if (mask & kTSForegroundMask) {
     if (has_foreground) {
-      // Create a simple foreground paint with the given color
-      DlPaint dl_paint;
-      dl_paint.setColor(DlColor(foreground_color));
-      style.foreground = dl_paint;
+      if (impl_->foreground_paint) {
+        style.foreground = *impl_->foreground_paint;
+      } else {
+        // Create a simple foreground paint with the given color
+        DlPaint dl_paint;
+        dl_paint.setColor(DlColor(foreground_color));
+        style.foreground = dl_paint;
+      }
     }
   }
+  impl_->foreground_paint.reset();
 
   if (mask & kTSTextShadowsMask) {
     DecodeTextShadows(shadows_data, shadows_data_length, style.text_shadows);
@@ -555,6 +570,22 @@ void ParagraphBuilderBridge::PushStyle(
   }
 
   impl_->builder->PushStyle(style);
+}
+
+void ParagraphBuilderBridge::SetForegroundPaint(const void* paint_data,
+                                                const void* shader_ptr,
+                                                const void* color_filter_ptr,
+                                                const void* image_filter_ptr) {
+  if (!impl_) {
+    return;
+  }
+  flutter::DlPaint paint;
+  if (DecodeTextPaint(paint, paint_data, shader_ptr, color_filter_ptr,
+                      image_filter_ptr)) {
+    impl_->foreground_paint = paint;
+  } else {
+    impl_->foreground_paint.reset();
+  }
 }
 
 void ParagraphBuilderBridge::Pop() {

@@ -1028,4 +1028,18 @@ const void* CanvasBridge::GetDisplayListBuilderPtr() const {
   return static_cast<const void*>(&impl_->builder);
 }
 
+// Starling: a text style's foreground as a whole paint — its shader, its
+// stroke — for ParagraphBuilderBridge::SetForegroundPaint, which has no
+// decoder of its own. False when there is no paint to decode.
+bool DecodeTextPaint(flutter::DlPaint& paint,
+                     const void* paint_data,
+                     const void* shader_ptr,
+                     const void* color_filter_ptr,
+                     const void* image_filter_ptr) {
+  return DecodePaint(paint, paint_data,
+                     flutter::DisplayListOpFlags::kDrawPathFlags,
+                     flutter::DlTileMode::kDecal, shader_ptr, color_filter_ptr,
+                     image_filter_ptr) != nullptr;
+}
+
 }  // namespace flutter::swift_bridge
