@@ -33,3 +33,11 @@ need to be re-applied after a sync, before rebuilding the engine.
   `SkASSERT` that's compiled out in release builds. Reproduced under the
   `DesktopShellApp` linux_drm shell when Chrome's DMA-BUF surfaces composite
   underneath a shadow / blur.
+- **`skia-justify-ideographic-space.patch`** — skparagraph's
+  `TextLine::justify` counts an ideographic space (U+3000) as an ideograph
+  rather than a stretchable space. Justification hands every space's width
+  to the stretch and gives the spaces a line opens with none at all, so a
+  Chinese line's "　" shrank to the step and a justified paragraph opening
+  with "　　" began its first line two ems into the margin (Office's Word
+  layout: zh-1d3d66d3 and three sibling reports, 12pt left of Word's print).
+  Word keeps U+3000 an em, spaced like the ideographs beside it.

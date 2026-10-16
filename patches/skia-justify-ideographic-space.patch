@@ -1,0 +1,77 @@
+diff --git a/flutter/third_party/skia/modules/skparagraph/src/TextLine.cpp b/flutter/third_party/skia/modules/skparagraph/src/TextLine.cpp
+index 57be768ad1..806e6a638e 100644
+--- a/flutter/third_party/skia/modules/skparagraph/src/TextLine.cpp
++++ b/flutter/third_party/skia/modules/skparagraph/src/TextLine.cpp
+@@ -447,6 +447,27 @@ void TextLine::paintDecorations(ParagraphPainter* painter, SkScalar x, SkScalar
+     decorations.paint(painter, style, context, correctedBaseline);
+ }
+ 
++// Starling: an ideographic space (U+3000) is a character of its line as an
++// ideograph is, an em that justification spaces like the ideographs either
++// side; the line's other spaces give up their width to the stretch. Spread
++// as a space, a Chinese line's "　" shrank to the step, and a justified
++// paragraph that opens with two of them began its first line in the margin.
++static bool isIdeographicSpace(const Cluster* cluster) {
++    auto text = cluster->getOwner()->text();
++    auto range = cluster->textRange();
++    return range.width() == 3 && static_cast<unsigned char>(text[range.start]) == 0xE3 &&
++           static_cast<unsigned char>(text[range.start + 1]) == 0x80 &&
++           static_cast<unsigned char>(text[range.start + 2]) == 0x80;
++}
++
++static bool isSpreadSpace(const Cluster* cluster) {
++    return cluster->isWhitespaceBreak() && !isIdeographicSpace(cluster);
++}
++
++static bool isSpreadIdeograph(const Cluster* cluster) {
++    return cluster->isIdeographic() || isIdeographicSpace(cluster);
++}
++
+ void TextLine::justify(SkScalar maxWidth) {
+     int whitespacePatches = 0;
+     SkScalar textLen = 0;
+@@ -456,7 +477,7 @@ void TextLine::justify(SkScalar maxWidth) {
+     bool leadingWhitespaces = false;
+     this->iterateThroughClustersInGlyphsOrder(false, false,
+         [&](const Cluster* cluster, ClusterIndex index, bool ghost) {
+-            if (cluster->isWhitespaceBreak()) {
++            if (isSpreadSpace(cluster)) {
+                 if (index == 0) {
+                     leadingWhitespaces = true;
+                 } else if (!whitespacePatch && !leadingWhitespaces) {
+@@ -465,7 +486,7 @@ void TextLine::justify(SkScalar maxWidth) {
+                 }
+                 whitespacePatch = !leadingWhitespaces;
+                 whitespaceLen += cluster->width();
+-            } else if (cluster->isIdeographic()) {
++            } else if (isSpreadIdeograph(cluster)) {
+                 // Whitespace break before and after
+                 if (!whitespacePatch && index != 0) {
+                     // We only count patches BETWEEN words, not before
+@@ -513,7 +534,7 @@ void TextLine::justify(SkScalar maxWidth) {
+             return true;
+         }
+ 
+-        if (cluster->isWhitespaceBreak()) {
++        if (isSpreadSpace(cluster)) {
+             if (index == 0) {
+                 leadingWhitespaces = true;
+             } else if (!whitespacePatch && !leadingWhitespaces) {
+@@ -522,7 +543,7 @@ void TextLine::justify(SkScalar maxWidth) {
+                 --whitespacePatches;
+             }
+             shift -= cluster->width();
+-        } else if (cluster->isIdeographic()) {
++        } else if (isSpreadIdeograph(cluster)) {
+             if (!whitespacePatch && index != 0) {
+                 shift += step;
+                --whitespacePatches;
+@@ -536,7 +557,7 @@ void TextLine::justify(SkScalar maxWidth) {
+         this->shiftCluster(cluster, shift, prevShift);
+         prevShift = shift;
+         // We skip ideographic whitespaces
+-        if (!cluster->isWhitespaceBreak() && cluster->isIdeographic()) {
++        if (!isSpreadSpace(cluster) && isSpreadIdeograph(cluster)) {
+             shift += step;
+             whitespacePatch = true;
+             --whitespacePatches;
