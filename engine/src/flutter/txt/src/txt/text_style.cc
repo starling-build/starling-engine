@@ -36,6 +36,9 @@ bool TextStyle::equals(const TextStyle& other) const {
   if (font_style != other.font_style) {
     return false;
   }
+  if (baseline_shift != other.baseline_shift) {
+    return false;
+  }
   if (letter_spacing != other.letter_spacing) {
     return false;
   }

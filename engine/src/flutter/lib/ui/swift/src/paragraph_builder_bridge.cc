@@ -309,6 +309,8 @@ struct ParagraphBuilderImpl {
   std::unique_ptr<txt::ParagraphBuilder> builder;
   // Starling: SetForegroundPaint's, until the next PushStyle takes it.
   std::optional<flutter::DlPaint> foreground_paint;
+  // Starling: SetBaselineShift's, until the next PushStyle takes it.
+  std::optional<double> baseline_shift;
 
   explicit ParagraphBuilderImpl(std::unique_ptr<txt::ParagraphBuilder> b)
       : builder(std::move(b)) {}
@@ -545,6 +547,11 @@ void ParagraphBuilderBridge::PushStyle(
   }
   impl_->foreground_paint.reset();
 
+  if (impl_->baseline_shift.has_value()) {
+    style.baseline_shift = *impl_->baseline_shift;
+    impl_->baseline_shift.reset();
+  }
+
   if (mask & kTSTextShadowsMask) {
     DecodeTextShadows(shadows_data, shadows_data_length, style.text_shadows);
   }
@@ -570,6 +577,13 @@ void ParagraphBuilderBridge::PushStyle(
   }
 
   impl_->builder->PushStyle(style);
+}
+
+void ParagraphBuilderBridge::SetBaselineShift(double shift) {
+  if (!impl_) {
+    return;
+  }
+  impl_->baseline_shift = shift;
 }
 
 void ParagraphBuilderBridge::SetForegroundPaint(const void* paint_data,

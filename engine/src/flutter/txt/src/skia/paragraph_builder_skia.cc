@@ -189,6 +189,7 @@ skt::TextStyle ParagraphBuilderSkia::TxtToSkia(const TextStyle& txt) {
   skia.setFontSize(SkDoubleToScalar(txt.font_size));
   skia.setLetterSpacing(SkDoubleToScalar(txt.letter_spacing));
   skia.setWordSpacing(SkDoubleToScalar(txt.word_spacing));
+  skia.setBaselineShift(SkDoubleToScalar(txt.baseline_shift));
   skia.setHeight(SkDoubleToScalar(txt.height));
   skia.setHeightOverride(txt.has_height_override);
   skia.setHalfLeading(txt.half_leading);

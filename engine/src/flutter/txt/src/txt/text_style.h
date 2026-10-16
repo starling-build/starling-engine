@@ -41,6 +41,9 @@ class TextStyle {
   double font_size = 14.0;
   double letter_spacing = 0.0;
   double word_spacing = 0.0;
+  // Starling: the text's baseline moved down from the line's, in logical
+  // pixels (negative: up) — skparagraph's baseline shift.
+  double baseline_shift = 0.0;
   double height = 1.0;
   bool has_height_override = false;
   std::string locale;
