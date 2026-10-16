@@ -46,7 +46,9 @@ for patch_file in "${PATCH_DIR}"/skia-*.patch; do
         continue
     fi
 
-    if ! grep -q "checking file" <<< "${fwd_out}"; then
+    # (GNU patch says "checking file" on a dry run; the BSD patch on a
+    # Mac says "patching file". Either means it would apply.)
+    if ! grep -qE "checking file|patching file" <<< "${fwd_out}" || grep -qE "FAILED|Hunk #[0-9]+ failed" <<< "${fwd_out}"; then
         echo "  [fail] ${name}" >&2
         echo "${fwd_out}" >&2
         failed=$((failed + 1))
