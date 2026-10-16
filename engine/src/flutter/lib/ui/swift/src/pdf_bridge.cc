@@ -139,6 +139,43 @@ class GlyphTextCache {
       entry.unichars[ideograph] = pair.ideograph;
       entry.corrected = true;
     }
+    // A radical may share its glyph with a variant of its ideograph rather
+    // than the ideograph itself: a Simplified Chinese face draws ⼾ (U+2F3E)
+    // with its 户 (U+6237) and gives 戶 (U+6236), the table's ideograph, a
+    // glyph of its own, so 户 read back as ⼾ — 206 times in 19 documents.
+    // Such a glyph takes the lowest unified ideograph that reaches it.
+    std::unordered_map<SkGlyphID, bool> radical_glyphs;
+    for (const auto& pair : kRadicalIdeographs) {
+      SkGlyphID glyph = typeface->unicharToGlyph(pair.radical);
+      if (glyph != 0 && glyph < count &&
+          entry.unichars[glyph] == pair.radical) {
+        radical_glyphs[glyph] = true;
+      }
+    }
+    if (!radical_glyphs.empty()) {
+      constexpr struct {
+        SkUnichar first;
+        SkUnichar last;
+      } kUnifiedBlocks[] = {{0x3400, 0x4DBF}, {0x4E00, 0x9FFF}};
+      for (const auto& block : kUnifiedBlocks) {
+        const int length = block.last - block.first + 1;
+        std::vector<SkUnichar> unichars(length);
+        std::vector<SkGlyphID> glyphs(length);
+        for (int i = 0; i < length; i++) {
+          unichars[i] = block.first + i;
+        }
+        typeface->unicharsToGlyphs(unichars, glyphs);
+        for (int i = 0; i < length; i++) {
+          auto found = radical_glyphs.find(glyphs[i]);
+          if (found == radical_glyphs.end() || !found->second) {
+            continue;
+          }
+          entry.unichars[glyphs[i]] = unichars[i];
+          entry.corrected = true;
+          found->second = false;
+        }
+      }
+    }
     return entry;
   }
 
