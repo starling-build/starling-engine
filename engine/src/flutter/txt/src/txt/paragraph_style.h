@@ -80,6 +80,11 @@ class ParagraphStyle {
                               // to use custom leading as a ratio of font size.
   bool force_strut_height = false;
 
+  // Starling: each line keeps the fraction of its height rather than
+  // rounding to a whole unit (skparagraph's
+  // ParagraphStyle::setFractionalLineHeights). Off unless asked for.
+  bool fractional_line_heights = false;
+
   // General paragraph properties.
   TextAlign text_align = TextAlign::start;
   TextDirection text_direction = TextDirection::ltr;

@@ -1,0 +1,154 @@
+diff --git a/flutter/third_party/skia/modules/skparagraph/include/ParagraphStyle.h b/flutter/third_party/skia/modules/skparagraph/include/ParagraphStyle.h
+index 77e17da981..fa04e155e4 100644
+--- a/flutter/third_party/skia/modules/skparagraph/include/ParagraphStyle.h
++++ b/flutter/third_party/skia/modules/skparagraph/include/ParagraphStyle.h
+@@ -85,7 +85,8 @@ struct ParagraphStyle {
+                this->fTextDirection == rhs.fTextDirection && this->fTextAlign == rhs.fTextAlign &&
+                this->fDefaultTextStyle == rhs.fDefaultTextStyle &&
+                this->fReplaceTabCharacters == rhs.fReplaceTabCharacters &&
+-               this->fFakeMissingFontStyles == rhs.fFakeMissingFontStyles;
++               this->fFakeMissingFontStyles == rhs.fFakeMissingFontStyles &&
++               this->fFractionalLineHeights == rhs.fFractionalLineHeights;
+ 
+     }
+ 
+@@ -132,6 +133,12 @@ struct ParagraphStyle {
+     bool getApplyRoundingHack() const { return fApplyRoundingHack; }
+     void setApplyRoundingHack(bool value) { fApplyRoundingHack = value; }
+ 
++    // Starling: lines keep the fraction of their height (a word
++    // processor's lines are not whole layout units) rather than rounding
++    // each to one.
++    bool getFractionalLineHeights() const { return fFractionalLineHeights; }
++    void setFractionalLineHeights(bool value) { fFractionalLineHeights = value; }
++
+ private:
+     StrutStyle fStrutStyle;
+     TextStyle fDefaultTextStyle;
+@@ -146,6 +153,7 @@ private:
+     bool fReplaceTabCharacters;
+     bool fFakeMissingFontStyles;
+     bool fApplyRoundingHack = true;
++    bool fFractionalLineHeights = false;
+ };
+ }  // namespace textlayout
+ }  // namespace skia
+diff --git a/flutter/third_party/skia/modules/skparagraph/src/ParagraphCache.cpp b/flutter/third_party/skia/modules/skparagraph/src/ParagraphCache.cpp
+index f0ad958927..c2362cf66f 100644
+--- a/flutter/third_party/skia/modules/skparagraph/src/ParagraphCache.cpp
++++ b/flutter/third_party/skia/modules/skparagraph/src/ParagraphCache.cpp
+@@ -144,6 +144,7 @@ uint32_t ParagraphCacheKey::computeHash() const {
+     hash = mix(hash, SkGoodHash()(relax(fParagraphStyle.getHeight())));
+     hash = mix(hash, SkGoodHash()(fParagraphStyle.getTextDirection()));
+     hash = mix(hash, SkGoodHash()(fParagraphStyle.getReplaceTabCharacters() ? 1 : 0));
++    hash = mix(hash, SkGoodHash()(fParagraphStyle.getFractionalLineHeights() ? 1 : 0));
+ 
+     auto& strutStyle = fParagraphStyle.getStrutStyle();
+     if (strutStyle.getStrutEnabled()) {
+@@ -196,6 +197,10 @@ bool ParagraphCacheKey::operator==(const ParagraphCacheKey& other) const {
+         return false;
+     }
+ 
++    if (fParagraphStyle.getFractionalLineHeights() != other.fParagraphStyle.getFractionalLineHeights()) {
++        return false;
++    }
++
+     for (int i = 0; i < fTextStyles.size(); ++i) {
+         auto& tsa = fTextStyles[i];
+         auto& tsb = other.fTextStyles[i];
+diff --git a/flutter/third_party/skia/modules/skparagraph/src/ParagraphImpl.cpp b/flutter/third_party/skia/modules/skparagraph/src/ParagraphImpl.cpp
+index 14645d958c..bbc4df159d 100644
+--- a/flutter/third_party/skia/modules/skparagraph/src/ParagraphImpl.cpp
++++ b/flutter/third_party/skia/modules/skparagraph/src/ParagraphImpl.cpp
+@@ -179,10 +179,10 @@ void ParagraphImpl::layout(SkScalar rawWidth) {
+ 
+                 // Set the important values that are not zero
+                 fWidth = floorWidth;
+-                fHeight = fEmptyMetrics.height();
++                fHeight = fEmptyMetrics.height(fParagraphStyle.getFractionalLineHeights());
+                 if (fParagraphStyle.getStrutStyle().getStrutEnabled() &&
+                     fParagraphStyle.getStrutStyle().getForceStrutHeight()) {
+-                    fHeight = fStrutMetrics.height();
++                    fHeight = fStrutMetrics.height(fParagraphStyle.getFractionalLineHeights());
+                 }
+                 fAlphabeticBaseline = fEmptyMetrics.alphabeticBaseline();
+                 fIdeographicBaseline = fEmptyMetrics.ideographicBaseline();
+@@ -616,7 +616,7 @@ void ParagraphImpl::breakShapedTextIntoLines(SkScalar maxWidth) {
+             advance.fX -= cluster.width();
+         } while (trailingSpaces != 0);
+ 
+-        advance.fY = metrics.height();
++        advance.fY = metrics.height(fParagraphStyle.getFractionalLineHeights());
+         auto clusterRange = ClusterRange(0, trailingSpaces);
+         auto clusterRangeWithGhosts = ClusterRange(0, this->clusters().size() - 1);
+         this->addLine(SkPoint::Make(0, 0), advance,
+@@ -1031,7 +1031,7 @@ void ParagraphImpl::computeEmptyMetrics() {
+ 
+     if (!paragraphStyle().getStrutStyle().getForceStrutHeight() &&
+         textStyle.getHeightOverride()) {
+-        const auto intrinsicHeight = fEmptyMetrics.height();
++        const auto intrinsicHeight = fEmptyMetrics.height(fParagraphStyle.getFractionalLineHeights());
+         const auto strutHeight = textStyle.getHeight() * textStyle.getFontSize();
+         if (paragraphStyle().getStrutStyle().getHalfLeading()) {
+             fEmptyMetrics.update(
+diff --git a/flutter/third_party/skia/modules/skparagraph/src/Run.h b/flutter/third_party/skia/modules/skparagraph/src/Run.h
+index f5b3bf57e6..895b7123bd 100644
+--- a/flutter/third_party/skia/modules/skparagraph/src/Run.h
++++ b/flutter/third_party/skia/modules/skparagraph/src/Run.h
+@@ -476,6 +476,12 @@ public:
+     SkScalar height() const {
+         return ::round((double)fDescent - fAscent + fLeading);
+     }
++    // Starling: the height with its fraction where `fractional` (see
++    // ParagraphStyle::getFractionalLineHeights), rounded otherwise.
++    SkScalar height(bool fractional) const {
++        double h = (double)fDescent - fAscent + fLeading;
++        return fractional ? (SkScalar)h : (SkScalar)::round(h);
++    }
+ 
+     void update(SkScalar a, SkScalar d, SkScalar l) {
+         fAscent = a;
+diff --git a/flutter/third_party/skia/modules/skparagraph/src/TextWrapper.cpp b/flutter/third_party/skia/modules/skparagraph/src/TextWrapper.cpp
+index ca4d7dc4ee..07eee90989 100644
+--- a/flutter/third_party/skia/modules/skparagraph/src/TextWrapper.cpp
++++ b/flutter/third_party/skia/modules/skparagraph/src/TextWrapper.cpp
+@@ -294,6 +294,8 @@ void TextWrapper::breakTextIntoLines(ParagraphImpl* parent,
+     auto disableFirstAscent = parent->paragraphStyle().getTextHeightBehavior() & TextHeightBehavior::kDisableFirstAscent;
+     auto disableLastDescent = parent->paragraphStyle().getTextHeightBehavior() & TextHeightBehavior::kDisableLastDescent;
+     bool firstLine = true; // We only interested in fist line if we have to disable the first ascent
++    // Starling: see ParagraphStyle::getFractionalLineHeights.
++    const bool fractional = parent->paragraphStyle().getFractionalLineHeights();
+ 
+     SkScalar softLineMaxIntrinsicWidth = 0;
+     fEndLine = TextStretch(span.begin(), span.begin(), parent->strutForceHeight());
+@@ -375,7 +377,7 @@ void TextWrapper::breakTextIntoLines(ParagraphImpl* parent,
+             parent->strutMetrics().updateLineMetrics(fEndLine.metrics());
+         }
+ 
+-        SkScalar lineHeight = fEndLine.metrics().height();
++        SkScalar lineHeight = fEndLine.metrics().height(fractional);
+         firstLine = false;
+ 
+         if (fEndLine.empty()) {
+@@ -469,7 +471,7 @@ void TextWrapper::breakTextIntoLines(ParagraphImpl* parent,
+             if (disableLastDescent && !fHardLineBreak) {
+                 fEndLine.metrics().fDescent = fEndLine.metrics().fRawDescent;
+             }
+-            fHeight = std::max(fHeight, fEndLine.metrics().height());
++            fHeight = std::max(fHeight, fEndLine.metrics().height(fractional));
+         }
+     }
+ 
+@@ -494,10 +496,10 @@ void TextWrapper::breakTextIntoLines(ParagraphImpl* parent,
+                 0,
+                 0,
+                 SkVector::Make(0, fHeight),
+-                SkVector::Make(0, fEndLine.metrics().height()),
++                SkVector::Make(0, fEndLine.metrics().height(fractional)),
+                 fEndLine.metrics(),
+                 needEllipsis);
+-        fHeight += fEndLine.metrics().height();
++        fHeight += fEndLine.metrics().height(fractional);
+         parent->lines().back().setMaxRunMetrics(maxRunMetrics);
+     }
+ 

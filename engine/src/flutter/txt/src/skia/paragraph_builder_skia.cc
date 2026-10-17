@@ -136,6 +136,7 @@ skt::ParagraphStyle ParagraphBuilderSkia::TxtToSkia(const ParagraphStyle& txt) {
   skia.turnHintingOff();
   skia.setReplaceTabCharacters(true);
   skia.setApplyRoundingHack(false);
+  skia.setFractionalLineHeights(txt.fractional_line_heights);
 
   return skia;
 }

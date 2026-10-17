@@ -41,3 +41,13 @@ need to be re-applied after a sync, before rebuilding the engine.
   with "　　" began its first line two ems into the margin (Office's Word
   layout: zh-1d3d66d3 and three sibling reports, 12pt left of Word's print).
   Word keeps U+3000 an em, spaced like the ideographs beside it.
+- **`skia-fractional-line-heights.patch`** — skparagraph's
+  `ParagraphStyle::setFractionalLineHeights`: a paragraph that asks keeps
+  each line's height with its fraction, where skparagraph otherwise rounds
+  every line to a whole layout unit (`InternalLineMetrics::height`). Word
+  does not round: a 12pt PMingLiU line is 1332/1024 em, 15.61pt, and a
+  page of them reaches its foot where Word's does only with the fraction
+  (Office's Word layout: zh-de3410bd's page 1 ends two lines early in
+  Word's print, as it does here only so). Off by default; the Swift bridge
+  sets it from bit 13 of the encoded paragraph style, and Office asks for
+  it in a Word document's paragraphs only.

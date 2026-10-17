@@ -103,6 +103,9 @@ const int kPSHeightIndex = 9;
 const int kPSStrutStyleIndex = 10;
 const int kPSEllipsisIndex = 11;
 const int kPSLocaleIndex = 12;
+// Starling: a flag with no value of its own — lines keep the fraction of
+// their height (txt::ParagraphStyle::fractional_line_heights).
+const int kPSFractionalLineHeightsIndex = 13;
 
 const int kPSTextAlignMask = 1 << kPSTextAlignIndex;
 const int kPSTextDirectionMask = 1 << kPSTextDirectionIndex;
@@ -116,6 +119,7 @@ const int kPSTextHeightBehaviorMask = 1 << kPSTextHeightBehaviorIndex;
 const int kPSStrutStyleMask = 1 << kPSStrutStyleIndex;
 const int kPSEllipsisMask = 1 << kPSEllipsisIndex;
 const int kPSLocaleMask = 1 << kPSLocaleIndex;
+const int kPSFractionalLineHeightsMask = 1 << kPSFractionalLineHeightsIndex;
 
 // TextShadows decoding constants
 constexpr uint32_t kColorDefault = 0xFF000000;
@@ -398,6 +402,10 @@ ParagraphBuilderBridge::ParagraphBuilderBridge(
 
     if (mask & kPSLocaleMask) {
       style.locale = locale ? locale : "";
+    }
+
+    if (mask & kPSFractionalLineHeightsMask) {
+      style.fractional_line_heights = true;
     }
   }
 
