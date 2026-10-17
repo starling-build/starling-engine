@@ -13,15 +13,18 @@
 #include "third_party/skia/include/docs/SkPDFDocument.h"
 #include "third_party/skia/include/docs/SkPDFJpegHelpers.h"
 #include "third_party/skia/include/core/SkFont.h"
+#include "third_party/skia/include/core/SkM44.h"
 #include "third_party/skia/include/core/SkTextBlob.h"
 #include "third_party/skia/include/core/SkTypeface.h"
 #include "third_party/skia/src/core/SkFontPriv.h"
 #include "third_party/skia/src/core/SkTextBlobPriv.h"
 #include "third_party/skia/src/base/SkUTF.h"
 
+#include <cmath>
 #include <cstring>
 #include <string>
 #include <memory>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -197,7 +200,32 @@ class PdfCanvasDispatcher : public DlSkCanvasDispatcher {
                 DlScalar x,
                 DlScalar y) override {
     const SkTextBlob* blob = text ? text->GetTextBlob() : nullptr;
-    sk_sp<SkTextBlob> fixed = blob ? WithText(*blob) : nullptr;
+    // (An invisible character often comes as a blob of its own, the
+    // space glyph alone: it is held back until the next text, and
+    // dropped if that text starts where it stands — no advance.)
+    if (blob) {
+      const SkM44 matrix = canvas_->getLocalToDevice();
+      SkPoint first;
+      const bool placed = FirstGlyph(*blob, x, y, &first);
+      if (pending_) {
+        if (!placed || matrix != pending_->matrix ||
+            std::fabs(first.x() - pending_->at.x()) >= 1e-3f ||
+            std::fabs(first.y() - pending_->at.y()) >= 1e-3f) {
+          DrawPending();
+        }
+        pending_.reset();
+      }
+      if (placed && LoneSpace(*blob)) {
+        pending_ = Pending{sk_ref_sp(blob), x, y, first, matrix, paint()};
+        return;
+      }
+    }
+    sk_sp<SkTextBlob> visible = blob ? WithoutInvisibles(*blob) : nullptr;
+    const SkTextBlob* source = visible ? visible.get() : blob;
+    sk_sp<SkTextBlob> fixed = source ? WithText(*source) : nullptr;
+    if (!fixed) {
+      fixed = visible;
+    }
     if (!fixed) {
       DlSkCanvasDispatcher::drawText(text, x, y);
       return;
@@ -205,7 +233,135 @@ class PdfCanvasDispatcher : public DlSkCanvasDispatcher {
     canvas_->drawTextBlob(fixed, x, y, paint());
   }
 
+  // Writes a space held back at the end of the page.
+  void Flush() {
+    if (pending_) {
+      DrawPending();
+      pending_.reset();
+    }
+  }
+
  private:
+  struct Pending {
+    sk_sp<SkTextBlob> blob;
+    DlScalar x, y;
+    SkPoint at;
+    SkM44 matrix;
+    SkPaint paint;
+  };
+
+  void DrawPending() {
+    canvas_->save();
+    canvas_->setMatrix(pending_->matrix);
+    canvas_->drawTextBlob(pending_->blob, pending_->x, pending_->y,
+                          pending_->paint);
+    canvas_->restore();
+  }
+
+  // Where a blob's first glyph stands, if it is point-positioned.
+  static bool FirstGlyph(const SkTextBlob& blob,
+                         DlScalar x,
+                         DlScalar y,
+                         SkPoint* at) {
+    SkTextBlobRunIterator it(&blob);
+    if (it.done() || it.glyphCount() == 0) {
+      return false;
+    }
+    const SkPoint offset = it.offset() + SkPoint{x, y};
+    switch (it.positioning()) {
+      case SkTextBlobRunIterator::kFull_Positioning:
+        *at = it.points()[0] + offset;
+        return true;
+      case SkTextBlobRunIterator::kHorizontal_Positioning:
+        *at = {it.pos()[0] + offset.x(), offset.y()};
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  // Whether a blob is one space glyph and nothing else.
+  static bool LoneSpace(const SkTextBlob& blob) {
+    SkTextBlobRunIterator it(&blob);
+    if (it.done() || it.glyphCount() != 1 || it.textSize() > 0) {
+      return false;
+    }
+    const SkGlyphID space = it.font().unicharToGlyph(' ');
+    if (space == 0 || it.glyphs()[0] != space) {
+      return false;
+    }
+    it.next();
+    return it.done();
+  }
+
+  // Whether a run's glyph i is the font's space glyph set at no advance:
+  // what HarfBuzz draws for an invisible character — a word joiner, a
+  // zero-width space, a line separator — and a PDF reader reads as a
+  // space. The layout puts such characters in to say where a line may or
+  // may not break; written, "(D)\u2060-IT" read back "(D) -IT" (6,700
+  // spaces in 79 of the Word corpus's documents).
+  static bool Invisible(const SkTextBlobRunIterator& it,
+                        int i,
+                        SkGlyphID space) {
+    const int n = static_cast<int>(it.glyphCount());
+    if (space == 0 || i + 1 >= n || it.glyphs()[i] != space) {
+      return false;
+    }
+    if (it.positioning() == SkTextBlobRunIterator::kFull_Positioning) {
+      const SkPoint a = it.points()[i], b = it.points()[i + 1];
+      return std::fabs(b.x() - a.x()) < 1e-3f && std::fabs(b.y() - a.y()) < 1e-3f;
+    }
+    return std::fabs(it.pos()[i + 1] - it.pos()[i]) < 1e-3f;
+  }
+
+  // The blob without such glyphs, or null if it has none (or a run this
+  // does not rebuild: one carrying its own text, or positioned by default
+  // advances or by transforms).
+  static sk_sp<SkTextBlob> WithoutInvisibles(const SkTextBlob& blob) {
+    bool any = false;
+    for (SkTextBlobRunIterator it(&blob); !it.done(); it.next()) {
+      auto positioning = it.positioning();
+      if ((positioning != SkTextBlobRunIterator::kFull_Positioning &&
+           positioning != SkTextBlobRunIterator::kHorizontal_Positioning) ||
+          it.textSize() > 0) {
+        return nullptr;
+      }
+      const SkGlyphID space = it.font().unicharToGlyph(' ');
+      for (int i = 0; i < static_cast<int>(it.glyphCount()) && !any; i++) {
+        any = Invisible(it, i, space);
+      }
+    }
+    if (!any) {
+      return nullptr;
+    }
+    SkTextBlobBuilder builder;
+    for (SkTextBlobRunIterator it(&blob); !it.done(); it.next()) {
+      const int n = static_cast<int>(it.glyphCount());
+      const SkGlyphID space = it.font().unicharToGlyph(' ');
+      std::vector<int> kept;
+      for (int i = 0; i < n; i++) {
+        if (!Invisible(it, i, space)) {
+          kept.push_back(i);
+        }
+      }
+      if (kept.empty()) {
+        continue;
+      }
+      const int m = static_cast<int>(kept.size());
+      const auto& out = builder.allocRunPos(it.font(), m);
+      const SkPoint offset = it.offset();
+      for (int k = 0; k < m; k++) {
+        const int i = kept[k];
+        out.glyphs[k] = it.glyphs()[i];
+        out.points()[k] =
+            it.positioning() == SkTextBlobRunIterator::kFull_Positioning
+                ? it.points()[i] + offset
+                : SkPoint{it.pos()[i] + offset.x(), offset.y()};
+      }
+    }
+    return builder.make();
+  }
+
   // The blob again with every run's text, or null if no run needs it (or
   // a run is positioned in a way this does not rebuild: by default
   // advances or by transforms — the paragraph's runs are point-positioned).
@@ -283,6 +439,7 @@ class PdfCanvasDispatcher : public DlSkCanvasDispatcher {
 
   SkCanvas* canvas_;
   GlyphTextCache* cache_;
+  std::optional<Pending> pending_;
 };
 
 }  // namespace
@@ -327,6 +484,7 @@ bool WritePdf(const char* path,
     if (dl != nullptr && *dl) {
       PdfCanvasDispatcher dispatcher(canvas, &glyph_text);
       (*dl)->Dispatch(dispatcher);
+      dispatcher.Flush();
     }
     doc->endPage();
   }
