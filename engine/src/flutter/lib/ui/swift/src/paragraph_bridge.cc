@@ -348,11 +348,13 @@ void ParagraphBridge::ComputeLineMetrics(double* out_data,
     out_data[position++] = line.ascent;
     out_data[position++] = line.descent;
     out_data[position++] = line.unscaled_ascent;
-    // Height = round(ascent + descent), matching paragraph.cc — with
-    // its fraction where the paragraph keeps its lines' (Starling), so
-    // the lines add up to the paragraph's height.
+    // Height = round(ascent + descent), matching paragraph.cc — or,
+    // where the paragraph keeps its lines' fractions (Starling), the
+    // line's own height, its advance: so the lines add up to the
+    // paragraph's height whatever a strut or a line spacing adds that
+    // the runs' ascent and descent do not hold.
     out_data[position++] = impl_->fractional_line_heights
-                               ? line.ascent + line.descent
+                               ? line.height
                                : round(line.ascent + line.descent);
     out_data[position++] = line.width;
     out_data[position++] = line.left;
