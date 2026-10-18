@@ -348,19 +348,30 @@ void ParagraphBridge::ComputeLineMetrics(double* out_data,
     out_data[position++] = line.ascent;
     out_data[position++] = line.descent;
     out_data[position++] = line.unscaled_ascent;
-    // Height = round(ascent + descent), matching paragraph.cc — or,
-    // where the paragraph keeps its lines' fractions (Starling), the
-    // line's own height, its advance: so the lines add up to the
-    // paragraph's height whatever a strut or a line spacing adds that
-    // the runs' ascent and descent do not hold.
+    // Height = round(ascent + descent), matching paragraph.cc — with
+    // its fraction where the paragraph keeps its lines' (Starling).
+    // (What the line advances is ComputeLineAdvances'.)
     out_data[position++] = impl_->fractional_line_heights
-                               ? line.height
+                               ? line.ascent + line.descent
                                : round(line.ascent + line.descent);
     out_data[position++] = line.width;
     out_data[position++] = line.left;
     out_data[position++] = line.baseline;
     out_data[position++] = static_cast<double>(line.line_number);
   }
+}
+
+size_t ParagraphBridge::ComputeLineAdvances(double* out_data,
+                                            size_t max_lines) const {
+  if (!impl_ || !impl_->paragraph || !out_data) {
+    return 0;
+  }
+  std::vector<txt::LineMetrics> metrics = impl_->paragraph->GetLineMetrics();
+  size_t count = std::min(metrics.size(), max_lines);
+  for (size_t i = 0; i < count; ++i) {
+    out_data[i] = metrics[i].height;
+  }
+  return count;
 }
 
 void ParagraphBridge::SetFractionalLineHeights(bool value) {
