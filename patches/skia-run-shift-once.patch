@@ -1,0 +1,18 @@
+diff --git a/flutter/third_party/skia/modules/skparagraph/src/Run.h b/flutter/third_party/skia/modules/skparagraph/src/Run.h
+--- a/flutter/third_party/skia/modules/skparagraph/src/Run.h
++++ b/flutter/third_party/skia/modules/skparagraph/src/Run.h
+@@ -89,8 +89,12 @@
+     SkScalar ascent() const { return fFontMetrics.fAscent + fBaselineShift; }
+     SkScalar descent() const { return fFontMetrics.fDescent + fBaselineShift; }
+     SkScalar leading() const { return fFontMetrics.fLeading; }
+-    SkScalar correctAscent() const { return fCorrectAscent + fBaselineShift; }
+-    SkScalar correctDescent() const { return fCorrectDescent + fBaselineShift; }
++    // Starling: calculateMetrics() has already moved the run's corrected
++    // ascent and descent by its baseline shift; adding it again here counted
++    // the shift twice, and a line holding text raised 10.5pt stood 21pt
++    // taller where Word's stands 10.5 taller.
++    SkScalar correctAscent() const { return fCorrectAscent; }
++    SkScalar correctDescent() const { return fCorrectDescent; }
+     SkScalar correctLeading() const { return fCorrectLeading; }
+     const SkFont& font() const { return fFont; }
+     bool leftToRight() const { return fBidiLevel % 2 == 0; }
