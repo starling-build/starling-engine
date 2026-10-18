@@ -316,6 +316,10 @@ struct ParagraphBuilderImpl {
   // Starling: SetBaselineShift's, until the next PushStyle takes it.
   std::optional<double> baseline_shift;
 
+  // Starling: the style's fractional_line_heights, for the paragraph
+  // built to report its lines' heights by.
+  bool fractional_line_heights = false;
+
   explicit ParagraphBuilderImpl(std::unique_ptr<txt::ParagraphBuilder> b)
       : builder(std::move(b)) {}
 };
@@ -427,6 +431,7 @@ ParagraphBuilderBridge::ParagraphBuilderBridge(
                         "null; text will not lay out.";
     }
     impl_ = new ParagraphBuilderImpl(std::move(builder));
+    impl_->fractional_line_heights = style.fractional_line_heights;
   } else {
     // Worth saying out loud: without it the only symptom is AddTextSafe
     // returning false, which the Swift side reports as "Invalid text provided
@@ -672,7 +677,9 @@ ParagraphBridge* ParagraphBuilderBridge::Build() {
 
   // Create ParagraphBridge from the built paragraph
   // We need to pass ownership via a void pointer
-  return new ParagraphBridge(static_cast<void*>(&paragraph));
+  auto* bridge = new ParagraphBridge(static_cast<void*>(&paragraph));
+  bridge->SetFractionalLineHeights(impl_->fractional_line_heights);
+  return bridge;
 }
 
 }  // namespace flutter::swift_bridge

@@ -19,6 +19,8 @@ namespace flutter::swift_bridge {
 // Pimpl implementation holding the actual Flutter types.
 struct ParagraphImpl {
   std::unique_ptr<txt::Paragraph> paragraph;
+  // Starling: see ParagraphBridge::SetFractionalLineHeights.
+  bool fractional_line_heights = false;
 
   explicit ParagraphImpl(std::unique_ptr<txt::Paragraph> p)
       : paragraph(std::move(p)) {}
@@ -346,12 +348,22 @@ void ParagraphBridge::ComputeLineMetrics(double* out_data,
     out_data[position++] = line.ascent;
     out_data[position++] = line.descent;
     out_data[position++] = line.unscaled_ascent;
-    // Height = round(ascent + descent), matching paragraph.cc
-    out_data[position++] = round(line.ascent + line.descent);
+    // Height = round(ascent + descent), matching paragraph.cc — with
+    // its fraction where the paragraph keeps its lines' (Starling), so
+    // the lines add up to the paragraph's height.
+    out_data[position++] = impl_->fractional_line_heights
+                               ? line.ascent + line.descent
+                               : round(line.ascent + line.descent);
     out_data[position++] = line.width;
     out_data[position++] = line.left;
     out_data[position++] = line.baseline;
     out_data[position++] = static_cast<double>(line.line_number);
+  }
+}
+
+void ParagraphBridge::SetFractionalLineHeights(bool value) {
+  if (impl_) {
+    impl_->fractional_line_heights = value;
   }
 }
 

@@ -268,6 +268,11 @@ class FLUTTER_SWIFT_BRIDGE_EXPORT
   /// Returns the number of lines (for pre-allocation).
   size_t ComputeLineMetricsCount() const;
 
+  /// Starling: report each line's height with its fraction (ascent plus
+  /// descent, unrounded) — set by the builder for a paragraph whose style
+  /// keeps its lines' fractions, so its lines add up to its height.
+  void SetFractionalLineHeights(bool value);
+
   /// Returns the line metrics at the given line number.
   ///
   /// **Dart Source:** `text.dart:3346-3347`
