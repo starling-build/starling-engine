@@ -51,3 +51,11 @@ need to be re-applied after a sync, before rebuilding the engine.
   Word's print, as it does here only so). Off by default; the Swift bridge
   sets it from bit 13 of the encoded paragraph style, and Office asks for
   it in a Word document's paragraphs only.
+- **`skia-pdf-fake-bold.patch`** — the PDF backend writes a fake-bold run
+  (`SkFont::setEmbolden`) as the face's own glyphs, filled and stroked
+  (text render mode 2, the stroke Skia's emboldening would add), where the
+  emboldened outline is a modified path and made every glyph a Type 3
+  drawing. Word for Mac writes its fake bold the same way. Readers group
+  Type 3 text badly: PDFKit read Office's bold Chinese headings as lines
+  broken where none breaks (zh-b8de3ae2's PMingLiU titles, 286 Type 3
+  fonts in one document, 2 now).

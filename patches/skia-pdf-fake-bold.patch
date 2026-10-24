@@ -1,0 +1,74 @@
+diff --git a/flutter/third_party/skia/src/pdf/SkPDFDevice.cpp b/flutter/third_party/skia/src/pdf/SkPDFDevice.cpp
+index b9df03c990..2b25ef567b 100644
+--- a/flutter/third_party/skia/src/pdf/SkPDFDevice.cpp
++++ b/flutter/third_party/skia/src/pdf/SkPDFDevice.cpp
+@@ -6,6 +6,8 @@
+  */
+ 
+ #include "src/pdf/SkPDFDevice.h"
++#include "src/core/SkTextFormatParams.h"
++#include "src/utils/SkFloatUtils.h"
+ 
+ #include "include/codec/SkCodec.h"
+ #include "include/core/SkAlphaType.h"
+@@ -944,6 +946,28 @@ void SkPDFDevice::internalDrawGlyphRun(
+         return;
+     }
+ 
++    // Fake bold as the face's own glyphs, filled and stroked (text render
++    // mode 2), as Word writes it. The emboldened outline is a modified
++    // path, which makes every glyph a Type 3 drawing.
++    if (glyphRunFont.isEmbolden() && fTextStroke == 0 && runPaint.getStyle() == SkPaint::kFill_Style &&
++        !runPaint.getPathEffect() && !runPaint.getShader()) {
++        SkFont plain = glyphRunFont;
++        plain.setEmbolden(false);
++        sk_sp<SkPDFStrike> plainStrike = SkPDFStrike::Make(fDocument, plain, runPaint);
++        const SkAdvancedTypefaceMetrics* plainMetrics =
++                plainStrike ? SkPDFFont::GetMetrics(plainStrike->fPath.fStrikeSpec.typeface(), fDocument) : nullptr;
++        if (plainMetrics &&
++            SkPDFFont::FontType(*plainStrike, *plainMetrics) != SkAdvancedTypefaceMetrics::kOther_Font) {
++            SkScalar size = plain.getSize();
++            fTextStroke = size * SkFloatInterpFunc(size, kStdFakeBoldInterpKeys, kStdFakeBoldInterpValues,
++                                                   kStdFakeBoldInterpLength);
++            sktext::GlyphRun plainRun(glyphRun, plain);
++            this->internalDrawGlyphRun(plainRun, offset, runPaint);
++            fTextStroke = 0;
++            return;
++        }
++    }
++
+     sk_sp<SkPDFStrike> pdfStrike = SkPDFStrike::Make(fDocument, glyphRunFont, runPaint);
+     if (!pdfStrike) {
+         return;
+@@ -997,8 +1021,16 @@ void SkPDFDevice::internalDrawGlyphRun(
+         fDocument->addStructElemTitle(fMarkManager.elemId(), glyphRun.text());
+     }
+ 
++    if (fTextStroke > 0) {
++        out->writeText("q\n");
++        SkPDFUtils::AppendScalar(fTextStroke, out);
++        out->writeText(" w\n");
++    }
+     out->writeText("BT\n");
+-    SK_AT_SCOPE_EXIT(out->writeText("ET\n"));
++    if (fTextStroke > 0) {
++        out->writeText("2 Tr\n");
++    }
++    SK_AT_SCOPE_EXIT(out->writeText(fTextStroke > 0 ? "ET\nQ\n" : "ET\n"));
+ 
+     const int numGlyphs = typeface.countGlyphs();
+ 
+diff --git a/flutter/third_party/skia/src/pdf/SkPDFDevice.h b/flutter/third_party/skia/src/pdf/SkPDFDevice.h
+index 6cf3c5089f..1e6fee6bc4 100644
+--- a/flutter/third_party/skia/src/pdf/SkPDFDevice.h
++++ b/flutter/third_party/skia/src/pdf/SkPDFDevice.h
+@@ -180,6 +180,9 @@ private:
+         bool fMadeMarks;
+     } fMarkManager;
+ 
++    // The stroke a fake-bold run is drawn with, in text render mode 2.
++    SkScalar fTextStroke = 0;
++
+     SkDynamicMemoryWStream fContent;
+     SkDynamicMemoryWStream fContentBuffer;
+     bool fNeedsExtraSave = false;

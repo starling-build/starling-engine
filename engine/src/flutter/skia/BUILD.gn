@@ -639,7 +639,11 @@ import("$_skia_root/gn/codec.gni")
 optional("pdf") {
   enabled = skia_use_zlib && skia_enable_pdf
   public_defines = [ "SK_SUPPORT_PDF" ]
-  deps = [ "//flutter/third_party/zlib" ]
+  deps = [
+    "//flutter/third_party/harfbuzz:harfbuzz_subset_only",
+    "//flutter/third_party/zlib",
+  ]
+  defines = [ "SK_PDF_USE_HARFBUZZ_SUBSET" ]
   public = skia_pdf_public
   sources = skia_pdf_sources
   sources_when_disabled = [ "$_skia_root/src/pdf/SkDocument_PDF_None.cpp" ]

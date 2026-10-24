@@ -171,6 +171,31 @@ source_set("harfbuzz_subset") {
   ]
 }
 
+# Starling: the subsetter alone, over harfbuzz_sources, for Skia's PDF
+# backend (flutter/skia's optional("pdf")): without it every face a PDF
+# uses is embedded whole — 20MB a document for Word's Chinese faces.
+# harfbuzz_subset repeats harfbuzz_sources' files, which would collide in
+# a library that links both.
+source_set("harfbuzz_subset_only") {
+  sources = [
+    "src/graph/gsubgpos-context.cc",
+    "src/hb-subset-cff-common.cc",
+    "src/hb-subset-cff1.cc",
+    "src/hb-subset-cff2.cc",
+    "src/hb-subset-input.cc",
+    "src/hb-subset-instancer-iup.cc",
+    "src/hb-subset-instancer-solver.cc",
+    "src/hb-subset-plan.cc",
+    "src/hb-subset.cc",
+  ]
+
+  configs += [ ":harfbuzz_flags" ]
+
+  public_configs = [ ":harfbuzz_config" ]
+
+  public_deps = [ ":harfbuzz_sources" ]
+}
+
 source_set("harfbuzz") {
   output_name = "harfbuzz"
   public_deps = [ ":harfbuzz_sources" ]
