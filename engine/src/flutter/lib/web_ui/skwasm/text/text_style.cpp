@@ -106,6 +106,15 @@ SKWASM_EXPORT void textStyle_setScaleX(TextStyle* style, SkScalar scaleX) {
   style->skiaStyle.setScaleX(scaleX);
 }
 
+// (Starling: the run's baseline moved down from the line's, in pixels —
+// skparagraph's TextStyle::setBaselineShift, which the native bridge reaches
+// through SetBaselineShift: a superscript set in its line, its height not
+// the line's. Absent from Google's published skwasm; the host binds it to
+// nothing there.)
+SKWASM_EXPORT void textStyle_setBaselineShift(TextStyle* style, SkScalar shift) {
+  style->skiaStyle.setBaselineShift(shift);
+}
+
 SKWASM_EXPORT void textStyle_setWordSpacing(TextStyle* style,
                                             SkScalar wordSpacing) {
   style->skiaStyle.setWordSpacing(wordSpacing);
