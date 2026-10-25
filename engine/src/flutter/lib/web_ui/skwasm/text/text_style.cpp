@@ -99,6 +99,13 @@ SKWASM_EXPORT void textStyle_setLetterSpacing(TextStyle* style,
   style->skiaStyle.setLetterSpacing(letterSpacing);
 }
 
+// (Starling: the run's glyphs drawn and advanced this much narrower or wider,
+// SkFont::setScaleX — patches/skia-scale-x.patch. Absent from Google's
+// published skwasm; the host binds it to nothing there.)
+SKWASM_EXPORT void textStyle_setScaleX(TextStyle* style, SkScalar scaleX) {
+  style->skiaStyle.setScaleX(scaleX);
+}
+
 SKWASM_EXPORT void textStyle_setWordSpacing(TextStyle* style,
                                             SkScalar wordSpacing) {
   style->skiaStyle.setWordSpacing(wordSpacing);

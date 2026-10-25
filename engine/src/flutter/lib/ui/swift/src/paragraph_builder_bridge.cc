@@ -3,6 +3,8 @@
 // found in the LICENSE file.
 
 #include "include/paragraph_builder_bridge.h"
+
+#include <cstring>
 #include "include/paragraph_bridge.h"
 #include "include/swift_bridge_engine_registry.h"
 
@@ -89,6 +91,11 @@ const int kTSForegroundMask = 1 << kTSForegroundIndex;
 const int kTSTextShadowsMask = 1 << kTSTextShadowsIndex;
 const int kTSFontFeaturesMask = 1 << kTSFontFeaturesIndex;
 const int kTSFontVariationsMask = 1 << kTSFontVariationsIndex;
+// Starling: a horizontal scale, its float's bits in the encoded style's
+// slot 8 (unused upstream) — so a Swift side that sets it talks to an
+// older engine harmlessly, the bit and the slot ignored.
+const int kTSScaleXMask = 1 << 20;
+const int kTSScaleXIndex = 8;
 
 // ParagraphStyle encoding constants (from paragraph_builder.cc)
 const int kPSTextAlignIndex = 1;
@@ -587,6 +594,13 @@ void ParagraphBuilderBridge::PushStyle(
   if (mask & kTSFontVariationsMask) {
     DecodeFontVariations(font_variations_data, font_variations_data_length,
                          style.font_variations);
+  }
+
+  if (mask & kTSScaleXMask) {
+    float scale_x;
+    static_assert(sizeof(scale_x) == sizeof(int32_t));
+    std::memcpy(&scale_x, &encoded_style[kTSScaleXIndex], sizeof(scale_x));
+    style.scale_x = scale_x;
   }
 
   impl_->builder->PushStyle(style);

@@ -1,0 +1,74 @@
+diff --git a/flutter/third_party/skia/modules/skparagraph/include/TextStyle.h b/flutter/third_party/skia/modules/skparagraph/include/TextStyle.h
+index 24b1fc679b..8536d8d031 100644
+--- a/flutter/third_party/skia/modules/skparagraph/include/TextStyle.h
++++ b/flutter/third_party/skia/modules/skparagraph/include/TextStyle.h
+@@ -257,6 +257,11 @@ public:
+     SkScalar getBaselineShift() const { return fBaselineShift; }
+     void setBaselineShift(SkScalar baselineShift) { fBaselineShift = baselineShift; }
+ 
++    // (Starling) A horizontal scale for the run's font, SkFont::setScaleX:
++    // its glyphs drawn and advanced that much narrower or wider.
++    SkScalar getScaleX() const { return fScaleX; }
++    void setScaleX(SkScalar scaleX) { fScaleX = scaleX; }
++
+     void setHeight(SkScalar height) { fHeight = height; }
+     SkScalar getHeight() const { return fHeightOverride ? fHeight : 0; }
+ 
+@@ -320,6 +325,7 @@ private:
+     SkScalar fHeight = 1.0;
+     bool fHeightOverride = false;
+     SkScalar fBaselineShift = 0.0f;
++    SkScalar fScaleX = 1.0f;
+     // true: half leading.
+     // false: scale ascent/descent with fHeight.
+     bool fHalfLeading = false;
+diff --git a/flutter/third_party/skia/modules/skparagraph/src/OneLineShaper.cpp b/flutter/third_party/skia/modules/skparagraph/src/OneLineShaper.cpp
+index 481a8e063c..08dd49f7ab 100644
+--- a/flutter/third_party/skia/modules/skparagraph/src/OneLineShaper.cpp
++++ b/flutter/third_party/skia/modules/skparagraph/src/OneLineShaper.cpp
+@@ -654,6 +654,7 @@ bool OneLineShaper::shape() {
+ 
+                 // Create one more font to try
+                 SkFont font(std::move(typeface), block.fStyle.getFontSize());
++                font.setScaleX(block.fStyle.getScaleX());
+                 font.setEdging(block.fStyle.getFontEdging());
+                 font.setHinting(block.fStyle.getFontHinting());
+                 font.setSubpixel(block.fStyle.getSubpixel());
+diff --git a/flutter/third_party/skia/modules/skparagraph/src/TextStyle.cpp b/flutter/third_party/skia/modules/skparagraph/src/TextStyle.cpp
+index 26a7a9eb59..8e40ddb322 100644
+--- a/flutter/third_party/skia/modules/skparagraph/src/TextStyle.cpp
++++ b/flutter/third_party/skia/modules/skparagraph/src/TextStyle.cpp
+@@ -24,6 +24,7 @@ TextStyle TextStyle::cloneForPlaceholder() {
+     result.fFontFeatures = fFontFeatures;
+     result.fHalfLeading = fHalfLeading;
+     result.fBaselineShift = fBaselineShift;
++    result.fScaleX = fScaleX;
+     result.fFontArguments = fFontArguments;
+     return result;
+ }
+@@ -64,6 +65,9 @@ bool TextStyle::equals(const TextStyle& other) const {
+     if (fBaselineShift != other.fBaselineShift) {
+         return false;
+     }
++    if (fScaleX != other.fScaleX) {
++        return false;
++    }
+     if (fFontSize != other.fFontSize) {
+         return false;
+     }
+@@ -110,6 +114,7 @@ bool TextStyle::equalsByFonts(const TextStyle& that) const {
+            nearlyEqual(fWordSpacing, that.fWordSpacing) &&
+            nearlyEqual(fHeight, that.fHeight) &&
+            nearlyEqual(fBaselineShift, that.fBaselineShift) &&
++           nearlyEqual(fScaleX, that.fScaleX) &&
+            nearlyEqual(fFontSize, that.fFontSize) &&
+            fLocale == that.fLocale;
+ }
+@@ -157,6 +162,7 @@ bool TextStyle::matchOneAttribute(StyleType styleType, const TextStyle& other) c
+                    fHeight == other.fHeight &&
+                    fHalfLeading == other.fHalfLeading &&
+                    fBaselineShift == other.fBaselineShift &&
++                   fScaleX == other.fScaleX &&
+                    fFontArguments == other.fFontArguments;
+         default:
+             SkASSERT(false);

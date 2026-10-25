@@ -51,6 +51,15 @@ need to be re-applied after a sync, before rebuilding the engine.
   Word's print, as it does here only so). Off by default; the Swift bridge
   sets it from bit 13 of the encoded paragraph style, and Office asks for
   it in a Word document's paragraphs only.
+- **`skia-scale-x.patch`** — skparagraph's `TextStyle::setScaleX`: a
+  run's font drawn and advanced that much narrower or wider
+  (`SkFont::setScaleX` on the shaper's font, which HarfBuzz's positions and
+  the drawn glyphs both follow; `equalsByFonts` tells two scales apart, so
+  runs and the paragraph cache keep them apart too). Starling: Word for
+  Windows' Arabic, set at Arial's widths where the stand-in is Noto Naskh,
+  11% wider (Office's Word layout, zh-d97c5474). Reached through txt's
+  `scale_x`, the Swift bridge's encoded text style (slot 8, mask bit 20)
+  and skwasm's `textStyle_setScaleX`; 1 unless a run asks.
 - **`skia-pdf-fake-bold.patch`** — the PDF backend writes a fake-bold run
   (`SkFont::setEmbolden`) as the face's own glyphs, filled and stroked
   (text render mode 2, the stroke Skia's emboldening would add), where the

@@ -44,6 +44,9 @@ class TextStyle {
   // Starling: the text's baseline moved down from the line's, in logical
   // pixels (negative: up) — skparagraph's baseline shift.
   double baseline_shift = 0.0;
+  // Starling: the run's glyphs drawn and advanced this much narrower or
+  // wider — SkFont::setScaleX, through patches/skia-scale-x.patch.
+  double scale_x = 1.0;
   double height = 1.0;
   bool has_height_override = false;
   std::string locale;
