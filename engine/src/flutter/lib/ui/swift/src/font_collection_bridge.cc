@@ -37,9 +37,15 @@ namespace {
 /// per-engine.
 class SwiftFontCollectionManager {
  public:
+  /// Never destroyed. Its collection's destructor purges SkShaper's
+  /// HarfBuzz face cache, a function-local static made at the first shaping
+  /// — after this one, so torn down before it at exit. Destroying the
+  /// manager then reads the freed cache: on Windows, flutter_engine.dll's
+  /// detach died with 0xC0000005 after a 19-page export had been written.
   static SwiftFontCollectionManager& Instance() {
-    static SwiftFontCollectionManager instance;
-    return instance;
+    static SwiftFontCollectionManager* instance =
+        new SwiftFontCollectionManager();
+    return *instance;
   }
 
   /// Registers an already-created typeface. The caller makes ONE typeface
