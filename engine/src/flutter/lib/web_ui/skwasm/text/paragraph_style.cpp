@@ -80,6 +80,15 @@ SKWASM_EXPORT void paragraphStyle_setTextStyle(ParagraphStyle* style,
   style->textStyle = *textStyle;
 }
 
+// (Starling: a line keeps its height's fraction, where skparagraph rounds
+// it to a whole unit — patches/skia-fractional-line-heights.patch, which
+// the native bridge reaches through bit 13 of the encoded style. Absent
+// from Google's published skwasm; the host binds it to nothing there.)
+SKWASM_EXPORT void paragraphStyle_setFractionalLineHeights(ParagraphStyle* style,
+                                                           bool value) {
+  style->skiaParagraphStyle.setFractionalLineHeights(value);
+}
+
 SKWASM_EXPORT void paragraphStyle_setApplyRoundingHack(ParagraphStyle* style,
                                                        bool applyRoundingHack) {
   style->skiaParagraphStyle.setApplyRoundingHack(applyRoundingHack);
