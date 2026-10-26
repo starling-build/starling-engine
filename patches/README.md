@@ -59,7 +59,11 @@ need to be re-applied after a sync, before rebuilding the engine.
   Windows' Arabic, set at Arial's widths where the stand-in is Noto Naskh,
   11% wider (Office's Word layout, zh-d97c5474). Reached through txt's
   `scale_x`, the Swift bridge's encoded text style (slot 8, mask bit 20)
-  and skwasm's `textStyle_setScaleX`; 1 unless a run asks.
+  and skwasm's `textStyle_setScaleX`; 1 unless a run asks. SkShaper's
+  HarfBuzz sub-font gets the font at scale 1: its advance callbacks read
+  `getWidths`, which already carry the scale, and `shapeRun` multiplies
+  HarfBuzz's positions by `getScaleX()` again, so without it a run at 0.5
+  advanced a quarter as wide (lenovo-3's probe on Linux, 91.18 -> 22.80).
 - **`skia-pdf-fake-bold.patch`** — the PDF backend writes a fake-bold run
   (`SkFont::setEmbolden`) as the face's own glyphs, filled and stroked
   (text render mode 2, the stroke Skia's emboldening would add), where the
