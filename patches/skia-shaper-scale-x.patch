@@ -1,0 +1,20 @@
+diff --git a/flutter/third_party/skia/modules/skshaper/src/SkShaper_harfbuzz.cpp b/flutter/third_party/skia/modules/skshaper/src/SkShaper_harfbuzz.cpp
+index c40b01d85a..3e59c1e5a3 100644
+--- a/flutter/third_party/skia/modules/skshaper/src/SkShaper_harfbuzz.cpp
++++ b/flutter/third_party/skia/modules/skshaper/src/SkShaper_harfbuzz.cpp
+@@ -340,8 +340,14 @@ HBFont create_sub_hb_font(const SkFont& font, const HBFont& typefaceFont) {
+     // Creating a sub font means that non-available functions
+     // are found from the parent.
+     HBFont skFont(hb_font_create_sub_font(typefaceFont.get()));
++    // (Starling) HarfBuzz is handed the font unscaled: its advances and
++    // extents come from getWidths/getBounds, which already carry scaleX, and
++    // shapeRun multiplies HarfBuzz's positions by getScaleX() again — a run at
++    // 0.5 came out a quarter as wide.
++    SkFont* unscaled = new SkFont(font);
++    unscaled->setScaleX(1);
+     hb_font_set_funcs(skFont.get(), skhb_get_font_funcs(),
+-                      reinterpret_cast<void *>(new SkFont(font)),
++                      reinterpret_cast<void *>(unscaled),
+                       [](void* user_data){ delete reinterpret_cast<SkFont*>(user_data); });
+     int scale = skhb_position(font.getSize());
+     hb_font_set_scale(skFont.get(), scale, scale);
