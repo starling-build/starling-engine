@@ -60,6 +60,15 @@ need to be re-applied after a sync, before rebuilding the engine.
   11% wider (Office's Word layout, zh-d97c5474). Reached through txt's
   `scale_x`, the Swift bridge's encoded text style (slot 8, mask bit 20)
   and skwasm's `textStyle_setScaleX`; 1 unless a run asks.
+- **`skia-no-line-spacing-shift.patch`** — skparagraph's `TextLine` no
+  longer shifts each line right by half its first cluster's letter spacing
+  (upstream's "TODO: This is the fix for flutter. Must be removed...").
+  `Run::addSpacesEvenly` already puts the spacing after each glyph, as Word
+  does, so the shift was the only difference: -0.3pt on condensed body
+  lines, +1.9 on a line opening with an autospaced character (windows,
+  chasing zh-5be7e156; the user's approval via macos, 2026-10-25). Apply
+  after `skia-justify-ideographic-space.patch`, which edits the same file
+  (the script's sorted order does).
 - **`skia-shaper-scale-x.patch`** — SkShaper's HarfBuzz sub-font gets the
   font at scale 1: its advance callbacks read `getWidths`, which already
   carry the scale, and `shapeRun` multiplies HarfBuzz's positions by
