@@ -60,6 +60,14 @@ need to be re-applied after a sync, before rebuilding the engine.
   11% wider (Office's Word layout, zh-d97c5474). Reached through txt's
   `scale_x`, the Swift bridge's encoded text style (slot 8, mask bit 20)
   and skwasm's `textStyle_setScaleX`; 1 unless a run asks.
+- **`skia-long-word-next-line.patch`** — skparagraph's TextWrapper sends a
+  word longer than a line to the next line first, unless it starts its line,
+  and breaks it there where it fills — as Word and browsers do. Upstream broke
+  it in place as soon as two of its clusters stood on the current line, so a
+  long unbreakable token (a mangled symbol, a hash, a joined Thai or Han
+  stretch) began at the end of a line and was chopped at the edge. URLs and
+  paths are not affected: ICU breaks them after "/" and "-". Approved by the
+  user (2026-10-26, via macos).
 - **`skia-no-line-spacing-shift.patch`** — skparagraph's `TextLine` no
   longer shifts each line right by half its first cluster's letter spacing
   (upstream's "TODO: This is the fix for flutter. Must be removed...").

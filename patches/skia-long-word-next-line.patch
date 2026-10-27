@@ -1,0 +1,37 @@
+--- a/flutter/third_party/skia/modules/skparagraph/src/TextWrapper.cpp
++++ b/flutter/third_party/skia/modules/skparagraph/src/TextWrapper.cpp
+@@ -132,14 +132,29 @@
+                     // Either way we are not in "word is too long" situation anymore
+                     break;
+                 }
+-                // If the word is too long we can break it right now and hope it's enough
++                // (Starling) A word longer than a line that does not start
++                // its line goes to the next one first, and is broken there
++                // where it fills — as Word does; upstream broke it in place
++                // as soon as two of its clusters stood on this line.
+                 fMinIntrinsicWidth = std::max(fMinIntrinsicWidth, nextWordLength);
+-                if (fClusters.endPos() - fClusters.startPos() > 1 ||
+-                    fWords.empty()) {
++                // (A line of nothing but what sets it up so far — the
++                // zero-width breaks and joiners the layout puts ahead of a
++                // word, whatever hair of width their glyphs have, and the
++                // placeholder that holds a first line's indent — counts as
++                // empty: the word starts it, and is broken in place, not
++                // sent on and a blank line left above it. zh-fec5fa30's cell
++                // paragraph "（30%）", 6 twips of first-line indent, broke
++                // "（30" | "%）" under a blank line.)
++                bool blankSoFar = true;
++                if (!fWords.empty()) {
++                    for (auto c = fWords.startCluster(); c && c <= fWords.endCluster(); ++c) {
++                        if (!c->isWhitespaceBreak() && !c->run().isPlaceholder() && c->width() > 0.5f) { blankSoFar = false; break; }
++                    }
++                }
++                if (fWords.empty() || blankSoFar) {
+                     fTooLongWord = true;
+                 } else {
+-                    // Even if the word is too long there is a very little space on this line.
+-                    // let's deal with it on the next line.
++                    // Let's deal with it on the next line.
+                 }
+             }
+ 
