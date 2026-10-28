@@ -10,6 +10,7 @@
 #include "txt/paragraph.h"
 
 #include "third_party/skia/modules/skparagraph/include/Paragraph.h"
+#include "third_party/skia/include/core/SkPath.h"
 
 namespace txt {
 
@@ -51,6 +52,31 @@ class ParagraphSkia : public Paragraph {
   void Layout(double width) override;
 
   bool Paint(flutter::DisplayListBuilder* builder, double x, double y) override;
+
+  // Visible glyph bounds, excluding advance-side bearings and line leading.
+  // Read-only; layout, hit testing and text-box metrics keep their own boxes.
+  SkRect GetGlyphInkBounds() const {
+    SkRect bounds = SkRect::MakeEmpty();
+    paragraph_->extendedVisit(
+        [&](int, const skia::textlayout::Paragraph::ExtendedVisitorInfo* info) {
+          if (!info) {
+            return;
+          }
+          for (int i = 0; i < info->count; ++i) {
+            // Raster strike bounds include whole-pixel padding, so they
+            // cannot define a scale-independent fit. Prefer outline ink;
+            // bitmap-only glyphs retain their raster bounds as a fallback.
+            const auto path = info->font.getPath(info->glyphs[i]);
+            const auto ink = path ? path->computeTightBounds() : info->bounds[i];
+            if (!ink.isEmpty()) {
+              bounds.join(ink.makeOffset(
+                  info->origin.x() + info->positions[i].x(),
+                  info->origin.y() + info->positions[i].y()));
+            }
+          }
+        });
+    return bounds;
+  }
 
   std::vector<TextBox> GetRectsForRange(
       size_t start,

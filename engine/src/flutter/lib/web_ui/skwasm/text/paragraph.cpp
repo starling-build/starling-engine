@@ -8,6 +8,7 @@
 #include "DartTypes.h"
 #include "TextStyle.h"
 #include "include/core/SkScalar.h"
+#include "include/core/SkPath.h"
 #include "text_types.h"
 
 using namespace Skwasm;
@@ -23,6 +24,30 @@ SKWASM_EXPORT SkScalar paragraph_getWidth(Paragraph* paragraph) {
 
 SKWASM_EXPORT SkScalar paragraph_getHeight(Paragraph* paragraph) {
   return paragraph->skiaParagraph->getHeight();
+}
+
+SKWASM_EXPORT bool paragraph_getGlyphInkBounds(Paragraph* paragraph,
+                                               SkRect* bounds) {
+  if (!paragraph || !bounds) {
+    return false;
+  }
+  *bounds = SkRect::MakeEmpty();
+  paragraph->skiaParagraph->extendedVisit(
+      [&](int, const skia::textlayout::Paragraph::ExtendedVisitorInfo* info) {
+        if (!info) {
+          return;
+        }
+        for (int i = 0; i < info->count; ++i) {
+          const auto path = info->font.getPath(info->glyphs[i]);
+          const auto ink = path ? path->computeTightBounds() : info->bounds[i];
+          if (!ink.isEmpty()) {
+            bounds->join(ink.makeOffset(
+                info->origin.x() + info->positions[i].x(),
+                info->origin.y() + info->positions[i].y()));
+          }
+        }
+      });
+  return !bounds->isEmpty() && bounds->isFinite();
 }
 
 SKWASM_EXPORT SkScalar paragraph_getLongestLine(Paragraph* paragraph) {

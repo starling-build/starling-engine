@@ -8,6 +8,7 @@
 // Flutter engine headers (only in .cc file)
 #include "flutter/display_list/dl_builder.h"
 #include "flutter/txt/src/txt/paragraph.h"
+#include "flutter/txt/src/skia/paragraph_skia.h"
 #include "third_party/skia/modules/skparagraph/include/Paragraph.h"
 
 #include <cmath>
@@ -56,6 +57,27 @@ double ParagraphBridge::GetHeight() const {
     return impl_->paragraph->GetHeight();
   }
   return 0.0;
+}
+
+bool ParagraphBridge::GetGlyphInkBounds(double* left,
+                                        double* top,
+                                        double* right,
+                                        double* bottom) const {
+  if (!impl_ || !impl_->paragraph) {
+    return false;
+  }
+  // ParagraphBuilderBridge uses txt::ParagraphBuilder::CreateSkiaBuilder.
+  const auto* paragraph =
+      static_cast<const txt::ParagraphSkia*>(impl_->paragraph.get());
+  const auto bounds = paragraph->GetGlyphInkBounds();
+  if (bounds.isEmpty() || !bounds.isFinite()) {
+    return false;
+  }
+  if (left) *left = bounds.left();
+  if (top) *top = bounds.top();
+  if (right) *right = bounds.right();
+  if (bottom) *bottom = bounds.bottom();
+  return true;
 }
 
 double ParagraphBridge::GetLongestLine() const {
