@@ -1,0 +1,45 @@
+--- a/flutter/third_party/skia/src/ports/SkFontHost_FreeType.cpp
++++ b/flutter/third_party/skia/src/ports/SkFontHost_FreeType.cpp
+@@ -510,6 +510,7 @@
+ 
+     uint32_t  fLoadGlyphFlags;
+     bool      fDoLinearMetrics;
++    SkVector  fLinearMetricsScale = SkVector::Make(1, 1);
+     bool      fLCDIsVert;
+ 
+     FT_Error setupSize();
+@@ -1052,6 +1053,16 @@
+             SkScalar x_ppem = upem * SkFT_FixedToScalar(ftmetrics.x_scale) / 64.0f;
+             SkScalar y_ppem = upem * SkFT_FixedToScalar(ftmetrics.y_scale) / 64.0f;
+             fMatrix22Scalar.preScale(fScale.x() / x_ppem, fScale.y() / y_ppem);
++        } else if (linearMetrics) {
++            // (Starling) FT_Set_Char_Size truncates the requested size to
++            // 1/64 pixel. Keep that size for hinted glyphs, but restore the
++            // requested scale for linear advances. Otherwise a 14 2/3px
++            // Carlito paragraph is narrower than CoreText's and its own PDF.
++            const SkScalar upem = fFaceRec->fFace->units_per_EM;
++            const FT_Size_Metrics& ftmetrics = fFaceRec->fFace->size->metrics;
++            const SkScalar x_ppem = upem * SkFT_FixedToScalar(ftmetrics.x_scale) / 64.0f;
++            const SkScalar y_ppem = upem * SkFT_FixedToScalar(ftmetrics.y_scale) / 64.0f;
++            fLinearMetricsScale.set(fScale.x() / x_ppem, fScale.y() / y_ppem);
+         }
+ 
+         // FT_LOAD_COLOR with scalable fonts means allow SVG.
+@@ -1359,7 +1370,7 @@
+ 
+     if (this->isVertical()) {
+         if (fDoLinearMetrics) {
+-            const SkScalar advanceScalar = SkFT_FixedToScalar(fFace->glyph->linearVertAdvance);
++            const SkScalar advanceScalar = SkFT_FixedToScalar(fFace->glyph->linearVertAdvance) * fLinearMetricsScale.y();
+             mx.advance.fX = fMatrix22Scalar.getSkewX() * advanceScalar;
+             mx.advance.fY = fMatrix22Scalar.getScaleY() * advanceScalar;
+         } else {
+@@ -1368,7 +1379,7 @@
+         }
+     } else {
+         if (fDoLinearMetrics) {
+-            const SkScalar advanceScalar = SkFT_FixedToScalar(fFace->glyph->linearHoriAdvance);
++            const SkScalar advanceScalar = SkFT_FixedToScalar(fFace->glyph->linearHoriAdvance) * fLinearMetricsScale.x();
+             mx.advance.fX = fMatrix22Scalar.getScaleX() * advanceScalar;
+             mx.advance.fY = fMatrix22Scalar.getSkewY() * advanceScalar;
+         } else {

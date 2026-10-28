@@ -93,3 +93,13 @@ need to be re-applied after a sync, before rebuilding the engine.
   Type 3 text badly: PDFKit read Office's bold Chinese headings as lines
   broken where none breaks (zh-b8de3ae2's PMingLiU titles, 286 Type 3
   fonts in one document, 2 now).
+
+- **`skia-freetype-linear-size.patch`** — preserve the requested floating
+  point font size in FreeType's linear glyph advances. The 26.6 size passed
+  to `FT_Set_Char_Size` truncates 14⅔px to 14.65625px; eight Carlito “M”s
+  then advance 100.24646px instead of CoreText's 100.31775px. Restore the
+  ratio from the actual FreeType size to the requested size for linear
+  advances only, leaving hinted outlines and bitmap strikes alone. The
+  existing subpixel-size matrix correction still handles sizes below 1px.
+  This removes the Mac native/skwasm word-boringcrypto wrap differences at
+  screen scale, while its 220px PDF font already uses an exact 26.6 size.
