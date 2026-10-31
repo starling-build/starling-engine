@@ -102,6 +102,15 @@ const int kTSMetricsOverrideMask = 1 << 21;
 const int kTSAscentOverrideIndex = 9;
 const int kTSDescentOverrideIndex = 10;
 
+// Starling: a probe the Swift side looks up with dlsym before it sends
+// per-line indents or metrics overrides. An older engine ignores both
+// silently and lays the text out wrong; the missing symbol is how the
+// caller finds out and warns once.
+extern "C" __attribute__((visibility("default"))) int
+StarlingTextLineIndentsSupported() {
+  return 1;
+}
+
 // ParagraphStyle encoding constants (from paragraph_builder.cc)
 const int kPSTextAlignIndex = 1;
 const int kPSTextDirectionIndex = 2;
