@@ -96,6 +96,11 @@ const int kTSFontVariationsMask = 1 << kTSFontVariationsIndex;
 // older engine harmlessly, the bit and the slot ignored.
 const int kTSScaleXMask = 1 << 20;
 const int kTSScaleXIndex = 8;
+// Starling: ascent and descent overrides, floats' bits in slots 9 and 10
+// under mask bit 21 (the Swift side sizes the array to 11 when it sets it).
+const int kTSMetricsOverrideMask = 1 << 21;
+const int kTSAscentOverrideIndex = 9;
+const int kTSDescentOverrideIndex = 10;
 
 // ParagraphStyle encoding constants (from paragraph_builder.cc)
 const int kPSTextAlignIndex = 1;
@@ -113,6 +118,12 @@ const int kPSLocaleIndex = 12;
 // Starling: a flag with no value of its own — lines keep the fraction of
 // their height (txt::ParagraphStyle::fractional_line_heights).
 const int kPSFractionalLineHeightsIndex = 13;
+// Starling: per-line (left, right) indents. Mask bit 14; the encoded style
+// carries the pair count in slot 7 and each pair's two floats (as bits)
+// from slot 8 on. An engine without this ignores the bit and the slots.
+const int kPSLineIndentsIndex = 14;
+const int kPSLineIndentsCountIndex = 7;
+const int kPSLineIndentsFirstIndex = 8;
 
 const int kPSTextAlignMask = 1 << kPSTextAlignIndex;
 const int kPSTextDirectionMask = 1 << kPSTextDirectionIndex;
@@ -127,6 +138,7 @@ const int kPSStrutStyleMask = 1 << kPSStrutStyleIndex;
 const int kPSEllipsisMask = 1 << kPSEllipsisIndex;
 const int kPSLocaleMask = 1 << kPSLocaleIndex;
 const int kPSFractionalLineHeightsMask = 1 << kPSFractionalLineHeightsIndex;
+const int kPSLineIndentsMask = 1 << kPSLineIndentsIndex;
 
 // TextShadows decoding constants
 constexpr uint32_t kColorDefault = 0xFF000000;
@@ -418,6 +430,20 @@ ParagraphBuilderBridge::ParagraphBuilderBridge(
     if (mask & kPSFractionalLineHeightsMask) {
       style.fractional_line_heights = true;
     }
+
+    if ((mask & kPSLineIndentsMask) &&
+        encoded_style_length > kPSLineIndentsCountIndex) {
+      const int32_t count = encoded_style[kPSLineIndentsCountIndex];
+      if (count > 0 && encoded_style_length >=
+                           kPSLineIndentsFirstIndex + 2 * size_t(count)) {
+        for (int32_t i = 0; i < count; ++i) {
+          float pair[2];
+          std::memcpy(pair, &encoded_style[kPSLineIndentsFirstIndex + 2 * i],
+                      sizeof(pair));
+          style.line_indents.emplace_back(pair[0], pair[1]);
+        }
+      }
+    }
   }
 
   // Create the paragraph builder using the font collection from the engine
@@ -601,6 +627,15 @@ void ParagraphBuilderBridge::PushStyle(
     static_assert(sizeof(scale_x) == sizeof(int32_t));
     std::memcpy(&scale_x, &encoded_style[kTSScaleXIndex], sizeof(scale_x));
     style.scale_x = scale_x;
+  }
+
+  if ((mask & kTSMetricsOverrideMask) && encoded_style_length >= 11) {
+    float ascent, descent;
+    std::memcpy(&ascent, &encoded_style[kTSAscentOverrideIndex], sizeof(ascent));
+    std::memcpy(&descent, &encoded_style[kTSDescentOverrideIndex], sizeof(descent));
+    style.has_metrics_override = true;
+    style.ascent_override = ascent;
+    style.descent_override = descent;
   }
 
   impl_->builder->PushStyle(style);

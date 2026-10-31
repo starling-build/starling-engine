@@ -7,6 +7,8 @@
 
 #include <climits>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "font_style.h"
 #include "font_weight.h"
@@ -84,6 +86,11 @@ class ParagraphStyle {
   // rounding to a whole unit (skparagraph's
   // ParagraphStyle::setFractionalLineHeights). Off unless asked for.
   bool fractional_line_heights = false;
+
+  // Starling: a (left, right) inset per line, the last entry repeating
+  // for the lines after it — skparagraph's ParagraphStyle::setLineIndents.
+  // Empty is no inset.
+  std::vector<std::pair<double, double>> line_indents;
 
   // General paragraph properties.
   TextAlign text_align = TextAlign::start;

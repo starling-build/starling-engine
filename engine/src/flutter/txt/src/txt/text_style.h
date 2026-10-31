@@ -47,6 +47,12 @@ class TextStyle {
   // Starling: the run's glyphs drawn and advanced this much narrower or
   // wider — SkFont::setScaleX, through patches/skia-scale-x.patch.
   double scale_x = 1.0;
+  // Starling: this run's ascent and descent, positive distances from the
+  // baseline in logical pixels, in place of its face's — skparagraph's
+  // TextStyle::setMetricsOverride (patches/skia-style-line-indents-metrics).
+  bool has_metrics_override = false;
+  double ascent_override = 0.0;
+  double descent_override = 0.0;
   double height = 1.0;
   bool has_height_override = false;
   std::string locale;

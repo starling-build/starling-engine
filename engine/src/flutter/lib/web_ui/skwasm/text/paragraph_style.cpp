@@ -89,6 +89,19 @@ SKWASM_EXPORT void paragraphStyle_setFractionalLineHeights(ParagraphStyle* style
   style->skiaParagraphStyle.setFractionalLineHeights(value);
 }
 
+// (Starling: one more line's (left, right) inset, appended in line order; the
+// last repeats for the lines after it — skparagraph's setLineIndents, through
+// patches/skia-style-line-indents-metrics.patch, which the native bridge
+// reaches through the encoded style's slots. Absent from Google's published
+// skwasm; the host binds it to nothing there.)
+SKWASM_EXPORT void paragraphStyle_addLineIndent(ParagraphStyle* style,
+                                                SkScalar left,
+                                                SkScalar right) {
+  auto indents = style->skiaParagraphStyle.getLineIndents();
+  indents.emplace_back(left, right);
+  style->skiaParagraphStyle.setLineIndents(std::move(indents));
+}
+
 SKWASM_EXPORT void paragraphStyle_setApplyRoundingHack(ParagraphStyle* style,
                                                        bool applyRoundingHack) {
   style->skiaParagraphStyle.setApplyRoundingHack(applyRoundingHack);

@@ -1,0 +1,278 @@
+--- a/flutter/third_party/skia/modules/skparagraph/include/ParagraphStyle.h
++++ b/flutter/third_party/skia/modules/skparagraph/include/ParagraphStyle.h
+@@ -86,7 +86,8 @@
+                this->fDefaultTextStyle == rhs.fDefaultTextStyle &&
+                this->fReplaceTabCharacters == rhs.fReplaceTabCharacters &&
+                this->fFakeMissingFontStyles == rhs.fFakeMissingFontStyles &&
+-               this->fFractionalLineHeights == rhs.fFractionalLineHeights;
++               this->fFractionalLineHeights == rhs.fFractionalLineHeights &&
++               this->fLineIndents == rhs.fLineIndents;
+ 
+     }
+ 
+@@ -139,6 +140,23 @@
+     bool getFractionalLineHeights() const { return fFractionalLineHeights; }
+     void setFractionalLineHeights(bool value) { fFractionalLineHeights = value; }
+ 
++    // Starling: a (left, right) inset per line, the last entry repeating
++    // for every line after it; empty is no inset. The breaker and
++    // justification both work in maxWidth - left - right, and a line's
++    // offset carries the left half.
++    const std::vector<std::pair<SkScalar, SkScalar>>& getLineIndents() const {
++        return fLineIndents;
++    }
++    void setLineIndents(std::vector<std::pair<SkScalar, SkScalar>> indents) {
++        fLineIndents = std::move(indents);
++    }
++    std::pair<SkScalar, SkScalar> lineIndent(size_t line) const {
++        if (fLineIndents.empty()) {
++            return {0, 0};
++        }
++        return fLineIndents[line < fLineIndents.size() ? line : fLineIndents.size() - 1];
++    }
++
+ private:
+     StrutStyle fStrutStyle;
+     TextStyle fDefaultTextStyle;
+@@ -154,6 +172,7 @@
+     bool fFakeMissingFontStyles;
+     bool fApplyRoundingHack = true;
+     bool fFractionalLineHeights = false;
++    std::vector<std::pair<SkScalar, SkScalar>> fLineIndents;
+ };
+ }  // namespace textlayout
+ }  // namespace skia
+--- a/flutter/third_party/skia/modules/skparagraph/include/TextStyle.h
++++ b/flutter/third_party/skia/modules/skparagraph/include/TextStyle.h
+@@ -262,6 +262,18 @@
+     SkScalar getScaleX() const { return fScaleX; }
+     void setScaleX(SkScalar scaleX) { fScaleX = scaleX; }
+ 
++    // (Starling) The run's ascent and descent, in layout units and as
++    // positive distances from the baseline, replacing the face's own: the
++    // run's box and the line it sits on take these. Unset leaves the face.
++    bool hasMetricsOverride() const { return fHasMetricsOverride; }
++    SkScalar getAscentOverride() const { return fAscentOverride; }
++    SkScalar getDescentOverride() const { return fDescentOverride; }
++    void setMetricsOverride(SkScalar ascent, SkScalar descent) {
++        fHasMetricsOverride = true;
++        fAscentOverride = ascent;
++        fDescentOverride = descent;
++    }
++
+     void setHeight(SkScalar height) { fHeight = height; }
+     SkScalar getHeight() const { return fHeightOverride ? fHeight : 0; }
+ 
+@@ -326,6 +338,9 @@
+     bool fHeightOverride = false;
+     SkScalar fBaselineShift = 0.0f;
+     SkScalar fScaleX = 1.0f;
++    bool fHasMetricsOverride = false;
++    SkScalar fAscentOverride = 0;
++    SkScalar fDescentOverride = 0;
+     // true: half leading.
+     // false: scale ascent/descent with fHeight.
+     bool fHalfLeading = false;
+--- a/flutter/third_party/skia/modules/skparagraph/src/OneLineShaper.cpp
++++ b/flutter/third_party/skia/modules/skparagraph/src/OneLineShaper.cpp
+@@ -213,7 +213,10 @@
+                     block.fStyle.getHalfLeading(),
+                     block.fStyle.getBaselineShift(),
+                     this->fParagraph->fRuns.size(),
+-                    advanceX
++                    advanceX,
++                    block.fStyle.hasMetricsOverride(),
++                    block.fStyle.getAscentOverride(),
++                    block.fStyle.getDescentOverride()
+                 );
+         auto piece = &this->fParagraph->fRuns.back();
+ 
+@@ -646,6 +649,9 @@
+             fHeight = block.fStyle.getHeightOverride() ? block.fStyle.getHeight() : 0;
+             fUseHalfLeading = block.fStyle.getHalfLeading();
+             fBaselineShift = block.fStyle.getBaselineShift();
++            fHasMetricsOverride = block.fStyle.hasMetricsOverride();
++            fAscentOverride = block.fStyle.getAscentOverride();
++            fDescentOverride = block.fStyle.getDescentOverride();
+             fAdvance = SkVector::Make(advanceX, 0);
+             fCurrentText = block.fRange;
+             fUnresolvedBlocks.emplace_back(RunBlock(block.fRange));
+--- a/flutter/third_party/skia/modules/skparagraph/src/OneLineShaper.h
++++ b/flutter/third_party/skia/modules/skparagraph/src/OneLineShaper.h
+@@ -96,7 +96,10 @@
+                                            fUseHalfLeading,
+                                            fBaselineShift,
+                                            ++fUniqueRunId,
+-                                           fAdvance.fX);
++                                           fAdvance.fX,
++                                           fHasMetricsOverride,
++                                           fAscentOverride,
++                                           fDescentOverride);
+         return fCurrentRun->newRunBuffer();
+     }
+ 
+@@ -116,6 +119,9 @@
+     TextRange fCurrentText;
+     SkScalar fHeight;
+     bool fUseHalfLeading;
++    bool fHasMetricsOverride = false;
++    SkScalar fAscentOverride = 0;
++    SkScalar fDescentOverride = 0;
+     SkScalar fBaselineShift;
+     SkVector fAdvance;
+     size_t fUnresolvedGlyphs;
+--- a/flutter/third_party/skia/modules/skparagraph/src/ParagraphCache.cpp
++++ b/flutter/third_party/skia/modules/skparagraph/src/ParagraphCache.cpp
+@@ -145,6 +145,10 @@
+     hash = mix(hash, SkGoodHash()(fParagraphStyle.getTextDirection()));
+     hash = mix(hash, SkGoodHash()(fParagraphStyle.getReplaceTabCharacters() ? 1 : 0));
+     hash = mix(hash, SkGoodHash()(fParagraphStyle.getFractionalLineHeights() ? 1 : 0));
++    for (auto& indent : fParagraphStyle.getLineIndents()) {
++        hash = mix(hash, SkGoodHash()(relax(indent.first)));
++        hash = mix(hash, SkGoodHash()(relax(indent.second)));
++    }
+ 
+     auto& strutStyle = fParagraphStyle.getStrutStyle();
+     if (strutStyle.getStrutEnabled()) {
+@@ -201,6 +205,10 @@
+         return false;
+     }
+ 
++    if (fParagraphStyle.getLineIndents() != other.fParagraphStyle.getLineIndents()) {
++        return false;
++    }
++
+     for (int i = 0; i < fTextStyles.size(); ++i) {
+         auto& tsa = fTextStyles[i];
+         auto& tsb = other.fTextStyles[i];
+--- a/flutter/third_party/skia/modules/skparagraph/src/ParagraphImpl.cpp
++++ b/flutter/third_party/skia/modules/skparagraph/src/ParagraphImpl.cpp
+@@ -574,6 +574,7 @@
+ void ParagraphImpl::breakShapedTextIntoLines(SkScalar maxWidth) {
+ 
+     if (!fHasLineBreaks &&
++        fParagraphStyle.getLineIndents().empty() &&
+         !fHasWhitespacesInside &&
+         fPlaceholders.size() == 1 &&
+         fRuns.size() == 1 && fRuns[0].fAdvance.fX <= maxWidth) {
+@@ -680,8 +681,11 @@
+         return;
+     }
+ 
++    size_t lineIndex = 0;
+     for (auto& line : fLines) {
+-        line.format(effectiveAlign, maxWidth);
++        // (Starling) A line's room is what its indents leave of the width.
++        auto indent = fParagraphStyle.lineIndent(lineIndex++);
++        line.format(effectiveAlign, SkIsFinite(maxWidth) ? maxWidth - indent.first - indent.second : maxWidth);
+     }
+ }
+ 
+--- a/flutter/third_party/skia/modules/skparagraph/src/Run.cpp
++++ b/flutter/third_party/skia/modules/skparagraph/src/Run.cpp
+@@ -21,7 +21,10 @@
+          bool useHalfLeading,
+          SkScalar baselineShift,
+          size_t index,
+-         SkScalar offsetX)
++         SkScalar offsetX,
++         bool hasMetricsOverride,
++         SkScalar ascentOverride,
++         SkScalar descentOverride)
+     : fOwner(owner)
+     , fTextRange(firstChar + info.utf8Range.begin(), firstChar + info.utf8Range.end())
+     , fClusterRange(EMPTY_CLUSTERS)
+@@ -47,6 +50,12 @@
+     fOffsets.push_back_n(info.glyphCount + 1);
+     fClusterIndexes.push_back_n(info.glyphCount + 1);
+     info.fFont.getMetrics(&fFontMetrics);
++    if (hasMetricsOverride) {
++        // (Starling) The style's own ascent and descent, in place of the face's.
++        fFontMetrics.fAscent = -ascentOverride;
++        fFontMetrics.fDescent = descentOverride;
++        fFontMetrics.fLeading = 0;
++    }
+ 
+     this->calculateMetrics();
+ 
+--- a/flutter/third_party/skia/modules/skparagraph/src/Run.h
++++ b/flutter/third_party/skia/modules/skparagraph/src/Run.h
+@@ -61,7 +61,10 @@
+         bool useHalfLeading,
+         SkScalar baselineShift,
+         size_t index,
+-        SkScalar shiftX);
++        SkScalar shiftX,
++        bool hasMetricsOverride = false,
++        SkScalar ascentOverride = 0,
++        SkScalar descentOverride = 0);
+     Run(const Run&) = default;
+     Run& operator=(const Run&) = delete;
+     Run(Run&&) = default;
+--- a/flutter/third_party/skia/modules/skparagraph/src/TextStyle.cpp
++++ b/flutter/third_party/skia/modules/skparagraph/src/TextStyle.cpp
+@@ -25,6 +25,9 @@
+     result.fHalfLeading = fHalfLeading;
+     result.fBaselineShift = fBaselineShift;
+     result.fScaleX = fScaleX;
++    result.fHasMetricsOverride = fHasMetricsOverride;
++    result.fAscentOverride = fAscentOverride;
++    result.fDescentOverride = fDescentOverride;
+     result.fFontArguments = fFontArguments;
+     return result;
+ }
+@@ -68,6 +71,11 @@
+     if (fScaleX != other.fScaleX) {
+         return false;
+     }
++    if (fHasMetricsOverride != other.fHasMetricsOverride ||
++        fAscentOverride != other.fAscentOverride ||
++        fDescentOverride != other.fDescentOverride) {
++        return false;
++    }
+     if (fFontSize != other.fFontSize) {
+         return false;
+     }
+@@ -115,6 +123,9 @@
+            nearlyEqual(fHeight, that.fHeight) &&
+            nearlyEqual(fBaselineShift, that.fBaselineShift) &&
+            nearlyEqual(fScaleX, that.fScaleX) &&
++           fHasMetricsOverride == that.fHasMetricsOverride &&
++           nearlyEqual(fAscentOverride, that.fAscentOverride) &&
++           nearlyEqual(fDescentOverride, that.fDescentOverride) &&
+            nearlyEqual(fFontSize, that.fFontSize) &&
+            fLocale == that.fLocale;
+ }
+@@ -163,6 +174,9 @@
+                    fHalfLeading == other.fHalfLeading &&
+                    fBaselineShift == other.fBaselineShift &&
+                    fScaleX == other.fScaleX &&
++                   fHasMetricsOverride == other.fHasMetricsOverride &&
++                   fAscentOverride == other.fAscentOverride &&
++                   fDescentOverride == other.fDescentOverride &&
+                    fFontArguments == other.fFontArguments;
+         default:
+             SkASSERT(false);
+--- a/flutter/third_party/skia/modules/skparagraph/src/TextWrapper.cpp
++++ b/flutter/third_party/skia/modules/skparagraph/src/TextWrapper.cpp
+@@ -320,7 +320,10 @@
+     bool needEllipsis = false;
+     while (fEndLine.endCluster() != end) {
+ 
+-        this->lookAhead(maxWidth, end, parent->getApplyRoundingHack());
++        // (Starling) This line's room: the width less its indents.
++        auto indent = parent->paragraphStyle().lineIndent(fLineNumber - 1);
++        auto lineWidth = endlessLine ? maxWidth : std::max<SkScalar>(0, maxWidth - indent.first - indent.second);
++        this->lookAhead(lineWidth, end, parent->getApplyRoundingHack());
+ 
+         auto lastLine = (hasEllipsis && unlimitedLines) || fLineNumber >= maxLines;
+         needEllipsis = hasEllipsis && !endlessLine && lastLine;
+@@ -409,7 +412,7 @@
+                 textIncludingNewlines, clusters, clustersWithGhosts, widthWithSpaces,
+                 fEndLine.startPos(),
+                 fEndLine.endPos(),
+-                SkVector::Make(0, fHeight),
++                SkVector::Make(indent.first, fHeight),
+                 SkVector::Make(fEndLine.width(), lineHeight),
+                 fEndLine.metrics(),
+                 needEllipsis && !fHardLineBreak);

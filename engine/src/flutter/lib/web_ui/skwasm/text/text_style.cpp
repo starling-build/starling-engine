@@ -106,6 +106,16 @@ SKWASM_EXPORT void textStyle_setScaleX(TextStyle* style, SkScalar scaleX) {
   style->skiaStyle.setScaleX(scaleX);
 }
 
+// (Starling: the run's ascent and descent, positive distances in pixels,
+// in place of its face's — skparagraph's TextStyle::setMetricsOverride,
+// through patches/skia-style-line-indents-metrics.patch. Absent from
+// Google's published skwasm; the host binds it to nothing there.)
+SKWASM_EXPORT void textStyle_setMetricsOverride(TextStyle* style,
+                                                SkScalar ascent,
+                                                SkScalar descent) {
+  style->skiaStyle.setMetricsOverride(ascent, descent);
+}
+
 // (Starling: the run's baseline moved down from the line's, in pixels —
 // skparagraph's TextStyle::setBaselineShift, which the native bridge reaches
 // through SetBaselineShift: a superscript set in its line, its height not

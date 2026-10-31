@@ -137,6 +137,15 @@ skt::ParagraphStyle ParagraphBuilderSkia::TxtToSkia(const ParagraphStyle& txt) {
   skia.setReplaceTabCharacters(true);
   skia.setApplyRoundingHack(false);
   skia.setFractionalLineHeights(txt.fractional_line_heights);
+  if (!txt.line_indents.empty()) {
+    std::vector<std::pair<SkScalar, SkScalar>> indents;
+    indents.reserve(txt.line_indents.size());
+    for (const auto& indent : txt.line_indents) {
+      indents.emplace_back(SkDoubleToScalar(indent.first),
+                           SkDoubleToScalar(indent.second));
+    }
+    skia.setLineIndents(std::move(indents));
+  }
 
   return skia;
 }
@@ -192,6 +201,10 @@ skt::TextStyle ParagraphBuilderSkia::TxtToSkia(const TextStyle& txt) {
   skia.setWordSpacing(SkDoubleToScalar(txt.word_spacing));
   skia.setBaselineShift(SkDoubleToScalar(txt.baseline_shift));
   skia.setScaleX(SkDoubleToScalar(txt.scale_x));
+  if (txt.has_metrics_override) {
+    skia.setMetricsOverride(SkDoubleToScalar(txt.ascent_override),
+                            SkDoubleToScalar(txt.descent_override));
+  }
   skia.setHeight(SkDoubleToScalar(txt.height));
   skia.setHeightOverride(txt.has_height_override);
   skia.setHalfLeading(txt.half_leading);
