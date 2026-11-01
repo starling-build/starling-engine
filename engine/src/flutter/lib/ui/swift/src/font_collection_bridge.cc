@@ -21,6 +21,7 @@
 
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 
 namespace flutter::swift_bridge {
@@ -152,6 +153,23 @@ std::mutex g_engine_font_mutex;
 sk_sp<txt::DynamicFontManager> g_engine_dynamic_fonts;
 const txt::FontCollection* g_engine_fonts_owner = nullptr;
 
+/// Starling: the process has chosen bundled fonts only (DisableSystemFontFallback).
+std::mutex g_policy_mutex;
+bool g_system_fonts_disabled = false;
+std::set<const txt::FontCollection*> g_policy_applied;
+
+/// Applies the choice to one collection, once: an empty default font manager
+/// (nothing for the platform to find) and no per-character fallback. The
+/// dynamic manager — the app's own faces — is untouched, and so is anything
+/// registered through it later.
+void ApplyBundledOnly(txt::FontCollection& collection) {
+  std::lock_guard<std::mutex> lock(g_policy_mutex);
+  if (!g_system_fonts_disabled) return;
+  if (!g_policy_applied.insert(&collection).second) return;
+  collection.SetDefaultFontManager(sk_sp<SkFontMgr>(SkFontMgr::RefEmpty()));
+  collection.DisableFontFallback();
+}
+
 /// One typeface into every collection that resolves families: the engine's
 /// (ParagraphBuilder) and the standalone manager (measurement and tests that
 /// run before an engine exists). The same sk_sp goes to both — this used to
@@ -182,6 +200,7 @@ bool RegisterFaceEverywhere(const sk_sp<SkTypeface>& face,
       else
         g_engine_dynamic_fonts->font_provider().RegisterTypeface(face,
                                                                  family_str);
+      ApplyBundledOnly(*engine_fc);
       // Rebuilds the resolved-family cache so the face just added is
       // visible to the next layout.
       engine_fc->ClearFontFamilyCache();
@@ -220,6 +239,43 @@ bool LoadFontFromFile(const char* path, const char* family_name) {
   return RegisterFaceEverywhere(face, family_name ? family_name : "");
 }
 
+bool LoadFontFromFileFace(const char* path,
+                          const char* family_name,
+                          int face_index) {
+  if (path == nullptr || *path == '\0' || face_index < 0) return false;
+  sk_sp<SkData> bytes = SkData::MakeFromFileName(path);
+  if (!bytes) return false;
+  sk_sp<SkFontMgr> mgr = txt::GetDefaultFontManager();
+  if (!mgr) return false;
+  // makeFromData's second argument is the face of a collection. An index past
+  // the last face makes no typeface (null), and nothing is registered.
+  sk_sp<SkTypeface> face = mgr->makeFromData(std::move(bytes), face_index);
+  return RegisterFaceEverywhere(face, family_name ? family_name : "");
+}
+
+void DisableSystemFontFallback() {
+  {
+    std::lock_guard<std::mutex> lock(g_policy_mutex);
+    g_system_fonts_disabled = true;
+  }
+  ApplyBundledOnly(*SwiftFontCollectionManager::Instance().GetFontCollection());
+  void* engine_fc_ptr = SwiftBridgeEngineRegistry::GetFontCollection();
+  if (engine_fc_ptr) {
+    auto& engine_fc =
+        *static_cast<std::shared_ptr<txt::FontCollection>*>(engine_fc_ptr);
+    if (engine_fc) {
+      std::lock_guard<std::mutex> lock(g_engine_font_mutex);
+      ApplyBundledOnly(*engine_fc);
+      engine_fc->ClearFontFamilyCache();
+    }
+  }
+}
+
+bool SystemFontFallbackDisabled() {
+  std::lock_guard<std::mutex> lock(g_policy_mutex);
+  return g_system_fonts_disabled;
+}
+
 void ClearFontFamilyCache() {
   SwiftFontCollectionManager::Instance().ClearCache();
 }
@@ -237,6 +293,13 @@ bool InitializeICU(const char* icu_data_path) {
   std::fclose(probe);
   fml::icu::InitializeICU(std::string(icu_data_path));
   return true;
+}
+
+// For the paragraph builder: a collection it is about to lay text out with
+// takes the bundled-fonts-only choice if the process made it (a no-op before,
+// and for a collection already given it).
+void ApplyBundledFontsPolicy(txt::FontCollection& collection) {
+  ApplyBundledOnly(collection);
 }
 
 // Expose the font collection for use by other bridges (like ParagraphBuilder)

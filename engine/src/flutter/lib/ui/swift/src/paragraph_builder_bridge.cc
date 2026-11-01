@@ -36,6 +36,7 @@ namespace flutter::swift_bridge {
 
 // font_collection_bridge.cc
 std::shared_ptr<txt::FontCollection> GetSwiftBridgeFontCollection();
+void ApplyBundledFontsPolicy(txt::FontCollection& collection);
 
 // canvas_bridge.cc
 bool DecodeTextPaint(flutter::DlPaint& paint,
@@ -123,6 +124,20 @@ StarlingTextFitReserveSupported() {
 }
 extern "C" __attribute__((visibility("default"))) int
 StarlingTextGlyphPathSupported() {
+  return 1;
+}
+
+// Starling: probes for LoadFontFromFileFace (a face of a font collection by
+// index) and DisableSystemFontFallback (bundled fonts only). They sit with
+// the others so the one export pattern (StarlingText*) covers them; a Swift
+// caller looks them up with dlsym before calling, since an engine without
+// the calls would fail to bind.
+extern "C" __attribute__((visibility("default"))) int
+StarlingTextFontFaceIndexSupported() {
+  return 1;
+}
+extern "C" __attribute__((visibility("default"))) int
+StarlingTextBundledFontsOnlySupported() {
   return 1;
 }
 
@@ -348,7 +363,11 @@ void DecodeFontVariations(const uint8_t* font_variations_data,
 std::shared_ptr<txt::FontCollection> GetFontCollection() {
   void* ptr = SwiftBridgeEngineRegistry::GetFontCollection();
   if (ptr) {
-    return *static_cast<std::shared_ptr<txt::FontCollection>*>(ptr);
+    auto collection = *static_cast<std::shared_ptr<txt::FontCollection>*>(ptr);
+    // (Bundled fonts only, if the process chose it: the engine's collection
+    // may have been made after the choice.)
+    if (collection) ApplyBundledFontsPolicy(*collection);
+    return collection;
   }
   // No engine (a headless converter, a test): the bridge's own collection
   // — the one LoadFontFromFile fills — lays text out just as well.
