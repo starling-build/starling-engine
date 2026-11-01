@@ -12,6 +12,7 @@
 #include "third_party/skia/modules/skparagraph/include/Paragraph.h"
 
 #include <cmath>
+#include <cstring>
 #include <memory>
 #include <vector>
 
@@ -78,6 +79,83 @@ bool ParagraphBridge::GetGlyphInkBounds(double* left,
   if (right) *right = bounds.right();
   if (bottom) *bottom = bounds.bottom();
   return true;
+}
+
+bool ParagraphBridge::GetGlyphPath(size_t utf8_start,
+                                    size_t utf8_end,
+                                    uint8_t* verbs,
+                                    size_t verb_capacity,
+                                    size_t* verb_count,
+                                    float* points,
+                                    size_t point_capacity,
+                                    size_t* point_count) const {
+  if (verb_count) *verb_count = 0;
+  if (point_count) *point_count = 0;
+  if (!impl_ || !impl_->paragraph || utf8_end <= utf8_start) {
+    return false;
+  }
+  const auto* paragraph =
+      static_cast<const txt::ParagraphSkia*>(impl_->paragraph.get());
+  const SkPath path = paragraph->GetGlyphPath(utf8_start, utf8_end);
+  if (path.isEmpty()) {
+    return false;
+  }
+  std::vector<uint8_t> out_verbs;
+  std::vector<float> out_points;
+  auto add = [&](const SkPoint& p) {
+    out_points.push_back(p.fX);
+    out_points.push_back(p.fY);
+  };
+  SkPath::Iter iter(path, false);
+  SkPoint pts[4];
+  for (SkPath::Verb verb = iter.next(pts); verb != SkPath::kDone_Verb;
+       verb = iter.next(pts)) {
+    switch (verb) {
+      case SkPath::kMove_Verb:
+        out_verbs.push_back(0);
+        add(pts[0]);
+        break;
+      case SkPath::kLine_Verb:
+        out_verbs.push_back(1);
+        add(pts[1]);
+        break;
+      case SkPath::kQuad_Verb:
+        out_verbs.push_back(2);
+        add(pts[1]);
+        add(pts[2]);
+        break;
+      case SkPath::kConic_Verb: {
+        SkPoint quads[1 + 2 * 4];
+        const int n = SkPath::ConvertConicToQuads(pts[0], pts[1], pts[2],
+                                                  iter.conicWeight(), quads, 2);
+        for (int q = 0; q < n; ++q) {
+          out_verbs.push_back(2);
+          add(quads[1 + 2 * q]);
+          add(quads[2 + 2 * q]);
+        }
+        break;
+      }
+      case SkPath::kCubic_Verb:
+        out_verbs.push_back(4);
+        add(pts[1]);
+        add(pts[2]);
+        add(pts[3]);
+        break;
+      case SkPath::kClose_Verb:
+        out_verbs.push_back(5);
+        break;
+      default:
+        break;
+    }
+  }
+  if (verb_count) *verb_count = out_verbs.size();
+  if (point_count) *point_count = out_points.size() / 2;
+  if (verbs && out_verbs.size() <= verb_capacity && points &&
+      out_points.size() / 2 <= point_capacity) {
+    std::memcpy(verbs, out_verbs.data(), out_verbs.size());
+    std::memcpy(points, out_points.data(), out_points.size() * sizeof(float));
+  }
+  return !out_verbs.empty();
 }
 
 double ParagraphBridge::GetLongestLine() const {

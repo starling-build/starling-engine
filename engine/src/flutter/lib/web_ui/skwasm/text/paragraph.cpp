@@ -11,6 +11,9 @@
 #include "include/core/SkPath.h"
 #include "text_types.h"
 
+#include <cstring>
+#include <vector>
+
 using namespace Skwasm;
 
 SKWASM_EXPORT void paragraph_dispose(Paragraph* paragraph) {
@@ -48,6 +51,110 @@ SKWASM_EXPORT bool paragraph_getGlyphInkBounds(Paragraph* paragraph,
         }
       });
   return !bounds->isEmpty() && bounds->isFinite();
+}
+
+// (Starling: the outlines of the glyphs whose cluster starts in the UTF-8 byte
+// range [start, end), in paragraph coordinates, flattened the way the native
+// bridge's ParagraphBridge::GetGlyphPath does: verbs (0 move, 1 line, 2 quad,
+// 4 cubic, 5 close — Skia's numbers; a conic comes back as quads) and points
+// (x, y pairs). counts[0] and counts[1] are set to the verbs and points the
+// outline needs; the buffers are filled only if they hold them (call once with
+// null buffers to size them). False for no outline. Absent from Google's
+// published skwasm; the host binds it to nothing there.)
+SKWASM_EXPORT bool paragraph_getGlyphPath(Paragraph* paragraph,
+                                          uint32_t start,
+                                          uint32_t end,
+                                          uint8_t* verbs,
+                                          uint32_t verbCapacity,
+                                          float* points,
+                                          uint32_t pointCapacity,
+                                          uint32_t* counts) {
+  if (counts) {
+    counts[0] = 0;
+    counts[1] = 0;
+  }
+  if (!paragraph || end <= start) {
+    return false;
+  }
+  SkPath all;
+  paragraph->skiaParagraph->extendedVisit(
+      [&](int, const skia::textlayout::Paragraph::ExtendedVisitorInfo* info) {
+        if (!info) {
+          return;
+        }
+        for (int i = 0; i < info->count; ++i) {
+          if (info->utf8Starts[i] < start || info->utf8Starts[i] >= end) {
+            continue;
+          }
+          const auto path = info->font.getPath(info->glyphs[i]);
+          if (!path || path->isEmpty()) {
+            continue;
+          }
+          all.addPath(*path, info->origin.x() + info->positions[i].x(),
+                      info->origin.y() + info->positions[i].y());
+        }
+      });
+  if (all.isEmpty()) {
+    return false;
+  }
+  std::vector<uint8_t> outVerbs;
+  std::vector<float> outPoints;
+  auto add = [&](const SkPoint& p) {
+    outPoints.push_back(p.fX);
+    outPoints.push_back(p.fY);
+  };
+  SkPath::Iter iter(all, false);
+  SkPoint pts[4];
+  for (SkPath::Verb verb = iter.next(pts); verb != SkPath::kDone_Verb;
+       verb = iter.next(pts)) {
+    switch (verb) {
+      case SkPath::kMove_Verb:
+        outVerbs.push_back(0);
+        add(pts[0]);
+        break;
+      case SkPath::kLine_Verb:
+        outVerbs.push_back(1);
+        add(pts[1]);
+        break;
+      case SkPath::kQuad_Verb:
+        outVerbs.push_back(2);
+        add(pts[1]);
+        add(pts[2]);
+        break;
+      case SkPath::kConic_Verb: {
+        SkPoint quads[1 + 2 * 4];
+        const int n = SkPath::ConvertConicToQuads(pts[0], pts[1], pts[2],
+                                                  iter.conicWeight(), quads, 2);
+        for (int q = 0; q < n; ++q) {
+          outVerbs.push_back(2);
+          add(quads[1 + 2 * q]);
+          add(quads[2 + 2 * q]);
+        }
+        break;
+      }
+      case SkPath::kCubic_Verb:
+        outVerbs.push_back(4);
+        add(pts[1]);
+        add(pts[2]);
+        add(pts[3]);
+        break;
+      case SkPath::kClose_Verb:
+        outVerbs.push_back(5);
+        break;
+      default:
+        break;
+    }
+  }
+  if (counts) {
+    counts[0] = static_cast<uint32_t>(outVerbs.size());
+    counts[1] = static_cast<uint32_t>(outPoints.size() / 2);
+  }
+  if (verbs && points && outVerbs.size() <= verbCapacity &&
+      outPoints.size() / 2 <= pointCapacity) {
+    memcpy(verbs, outVerbs.data(), outVerbs.size());
+    memcpy(points, outPoints.data(), outPoints.size() * sizeof(float));
+  }
+  return !outVerbs.empty();
 }
 
 SKWASM_EXPORT SkScalar paragraph_getLongestLine(Paragraph* paragraph) {

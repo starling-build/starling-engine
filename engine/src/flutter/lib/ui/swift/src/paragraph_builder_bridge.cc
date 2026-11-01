@@ -4,6 +4,7 @@
 
 #include "include/paragraph_builder_bridge.h"
 
+#include <algorithm>
 #include <cstring>
 #include "include/paragraph_bridge.h"
 #include "include/swift_bridge_engine_registry.h"
@@ -24,6 +25,7 @@
 #include "third_party/skia/include/core/SkColor.h"
 
 #include <cmath>
+#include <algorithm>
 #include <cstring>
 #include <memory>
 #include <optional>
@@ -111,6 +113,19 @@ StarlingTextLineIndentsSupported() {
   return 1;
 }
 
+// Starling: probes for the two later calls — a fit reserve (bit 15 of the
+// encoded paragraph style) and the glyph outlines (ParagraphBridge::GetGlyphPath).
+// A caller looks them up with dlsym before using them: an engine without the
+// symbol ignores the reserve silently and has no outline call.
+extern "C" __attribute__((visibility("default"))) int
+StarlingTextFitReserveSupported() {
+  return 1;
+}
+extern "C" __attribute__((visibility("default"))) int
+StarlingTextGlyphPathSupported() {
+  return 1;
+}
+
 // ParagraphStyle encoding constants (from paragraph_builder.cc)
 const int kPSTextAlignIndex = 1;
 const int kPSTextDirectionIndex = 2;
@@ -133,6 +148,11 @@ const int kPSFractionalLineHeightsIndex = 13;
 const int kPSLineIndentsIndex = 14;
 const int kPSLineIndentsCountIndex = 7;
 const int kPSLineIndentsFirstIndex = 8;
+// Starling: the fit reserve (points, one float as bits). Mask bit 15; its slot
+// follows the line-indent pairs: 8 + 2 * count, the count read only when bit
+// 14 is set (else 0), so the slot is 8 when there are no indents. An engine
+// without this ignores the bit and the slot.
+const int kPSFitReserveIndex = 15;
 
 const int kPSTextAlignMask = 1 << kPSTextAlignIndex;
 const int kPSTextDirectionMask = 1 << kPSTextDirectionIndex;
@@ -148,6 +168,7 @@ const int kPSEllipsisMask = 1 << kPSEllipsisIndex;
 const int kPSLocaleMask = 1 << kPSLocaleIndex;
 const int kPSFractionalLineHeightsMask = 1 << kPSFractionalLineHeightsIndex;
 const int kPSLineIndentsMask = 1 << kPSLineIndentsIndex;
+const int kPSFitReserveMask = 1 << kPSFitReserveIndex;
 
 // TextShadows decoding constants
 constexpr uint32_t kColorDefault = 0xFF000000;
@@ -450,6 +471,22 @@ ParagraphBuilderBridge::ParagraphBuilderBridge(
           std::memcpy(pair, &encoded_style[kPSLineIndentsFirstIndex + 2 * i],
                       sizeof(pair));
           style.line_indents.emplace_back(pair[0], pair[1]);
+        }
+      }
+    }
+
+    if (mask & kPSFitReserveMask) {
+      int32_t pairs = 0;
+      if ((mask & kPSLineIndentsMask) &&
+          encoded_style_length > kPSLineIndentsCountIndex) {
+        pairs = std::max<int32_t>(0, encoded_style[kPSLineIndentsCountIndex]);
+      }
+      const size_t slot = kPSLineIndentsFirstIndex + 2 * size_t(pairs);
+      if (encoded_style_length > slot) {
+        float reserve;
+        std::memcpy(&reserve, &encoded_style[slot], sizeof(reserve));
+        if (std::isfinite(reserve) && reserve > 0) {
+          style.fit_reserve = reserve;
         }
       }
     }

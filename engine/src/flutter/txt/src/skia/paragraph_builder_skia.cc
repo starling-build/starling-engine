@@ -137,6 +137,9 @@ skt::ParagraphStyle ParagraphBuilderSkia::TxtToSkia(const ParagraphStyle& txt) {
   skia.setReplaceTabCharacters(true);
   skia.setApplyRoundingHack(false);
   skia.setFractionalLineHeights(txt.fractional_line_heights);
+  if (txt.fit_reserve > 0) {
+    skia.setFitReserve(SkDoubleToScalar(txt.fit_reserve));
+  }
   if (!txt.line_indents.empty()) {
     std::vector<std::pair<SkScalar, SkScalar>> indents;
     indents.reserve(txt.line_indents.size());

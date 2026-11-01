@@ -78,6 +78,33 @@ class ParagraphSkia : public Paragraph {
     return bounds;
   }
 
+  // Starling: the outlines of the glyphs whose cluster starts in the UTF-8
+  // byte range [utf8_start, utf8_end) of the text, in paragraph coordinates
+  // (each glyph at its laid-out place on its line). A glyph with no outline
+  // (a bitmap face's, a space) adds nothing. Read-only.
+  SkPath GetGlyphPath(size_t utf8_start, size_t utf8_end) const {
+    SkPath result;
+    paragraph_->extendedVisit(
+        [&](int, const skia::textlayout::Paragraph::ExtendedVisitorInfo* info) {
+          if (!info) {
+            return;
+          }
+          for (int i = 0; i < info->count; ++i) {
+            const size_t start = info->utf8Starts[i];
+            if (start < utf8_start || start >= utf8_end) {
+              continue;
+            }
+            const auto path = info->font.getPath(info->glyphs[i]);
+            if (!path || path->isEmpty()) {
+              continue;
+            }
+            result.addPath(*path, info->origin.x() + info->positions[i].x(),
+                           info->origin.y() + info->positions[i].y());
+          }
+        });
+    return result;
+  }
+
   std::vector<TextBox> GetRectsForRange(
       size_t start,
       size_t end,

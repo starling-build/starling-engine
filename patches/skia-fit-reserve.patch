@@ -1,0 +1,79 @@
+--- a/flutter/third_party/skia/modules/skparagraph/include/ParagraphStyle.h
++++ b/flutter/third_party/skia/modules/skparagraph/include/ParagraphStyle.h
+@@ -87,7 +87,8 @@
+                this->fReplaceTabCharacters == rhs.fReplaceTabCharacters &&
+                this->fFakeMissingFontStyles == rhs.fFakeMissingFontStyles &&
+                this->fFractionalLineHeights == rhs.fFractionalLineHeights &&
+-               this->fLineIndents == rhs.fLineIndents;
++               this->fLineIndents == rhs.fLineIndents &&
++               this->fFitReserve == rhs.fFitReserve;
+ 
+     }
+ 
+@@ -157,6 +158,14 @@
+         return fLineIndents[line < fLineIndents.size() ? line : fLineIndents.size() - 1];
+     }
+ 
++    // Starling: room the line breaker holds back from every line, while
++    // justification still stretches the line across the whole width (less
++    // its indents): a line breaks as if the paragraph were `reserve` narrower
++    // and is then set to the full measure. Word's kashida justification
++    // does this (a reserve for the stretch). Zero is today's behaviour.
++    SkScalar getFitReserve() const { return fFitReserve; }
++    void setFitReserve(SkScalar reserve) { fFitReserve = reserve > 0 ? reserve : 0; }
++
+ private:
+     StrutStyle fStrutStyle;
+     TextStyle fDefaultTextStyle;
+@@ -173,6 +182,7 @@
+     bool fApplyRoundingHack = true;
+     bool fFractionalLineHeights = false;
+     std::vector<std::pair<SkScalar, SkScalar>> fLineIndents;
++    SkScalar fFitReserve = 0;
+ };
+ }  // namespace textlayout
+ }  // namespace skia
+--- a/flutter/third_party/skia/modules/skparagraph/src/ParagraphCache.cpp
++++ b/flutter/third_party/skia/modules/skparagraph/src/ParagraphCache.cpp
+@@ -145,6 +145,7 @@
+     hash = mix(hash, SkGoodHash()(fParagraphStyle.getTextDirection()));
+     hash = mix(hash, SkGoodHash()(fParagraphStyle.getReplaceTabCharacters() ? 1 : 0));
+     hash = mix(hash, SkGoodHash()(fParagraphStyle.getFractionalLineHeights() ? 1 : 0));
++    hash = mix(hash, SkGoodHash()(relax(fParagraphStyle.getFitReserve())));
+     for (auto& indent : fParagraphStyle.getLineIndents()) {
+         hash = mix(hash, SkGoodHash()(relax(indent.first)));
+         hash = mix(hash, SkGoodHash()(relax(indent.second)));
+@@ -205,6 +206,10 @@
+         return false;
+     }
+ 
++    if (fParagraphStyle.getFitReserve() != other.fParagraphStyle.getFitReserve()) {
++        return false;
++    }
++
+     if (fParagraphStyle.getLineIndents() != other.fParagraphStyle.getLineIndents()) {
+         return false;
+     }
+--- a/flutter/third_party/skia/modules/skparagraph/src/ParagraphImpl.cpp
++++ b/flutter/third_party/skia/modules/skparagraph/src/ParagraphImpl.cpp
+@@ -575,6 +575,7 @@
+ 
+     if (!fHasLineBreaks &&
+         fParagraphStyle.getLineIndents().empty() &&
++        fParagraphStyle.getFitReserve() <= 0 &&
+         !fHasWhitespacesInside &&
+         fPlaceholders.size() == 1 &&
+         fRuns.size() == 1 && fRuns[0].fAdvance.fX <= maxWidth) {
+--- a/flutter/third_party/skia/modules/skparagraph/src/TextWrapper.cpp
++++ b/flutter/third_party/skia/modules/skparagraph/src/TextWrapper.cpp
+@@ -322,7 +322,9 @@
+ 
+         // (Starling) This line's room: the width less its indents.
+         auto indent = parent->paragraphStyle().lineIndent(fLineNumber - 1);
+-        auto lineWidth = endlessLine ? maxWidth : std::max<SkScalar>(0, maxWidth - indent.first - indent.second);
++        // (Starling) ... and the breaker also holds back the paragraph's fit reserve, which
++        // justification does not (the line is set across the width less the indents alone).
++        auto lineWidth = endlessLine ? maxWidth : std::max<SkScalar>(0, maxWidth - indent.first - indent.second - parent->paragraphStyle().getFitReserve());
+         this->lookAhead(lineWidth, end, parent->getApplyRoundingHack());
+ 
+         auto lastLine = (hasEllipsis && unlimitedLines) || fLineNumber >= maxLines;

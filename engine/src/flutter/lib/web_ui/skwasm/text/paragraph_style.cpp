@@ -102,6 +102,16 @@ SKWASM_EXPORT void paragraphStyle_addLineIndent(ParagraphStyle* style,
   style->skiaParagraphStyle.setLineIndents(std::move(indents));
 }
 
+// (Starling: room every line's break holds back while justification still
+// stretches the line across the whole width — skparagraph's setFitReserve,
+// through patches/skia-fit-reserve.patch, which the native bridge reaches
+// through bit 15 of the encoded style. Absent from Google's published
+// skwasm; the host binds it to nothing there.)
+SKWASM_EXPORT void paragraphStyle_setFitReserve(ParagraphStyle* style,
+                                                SkScalar reserve) {
+  style->skiaParagraphStyle.setFitReserve(reserve);
+}
+
 SKWASM_EXPORT void paragraphStyle_setApplyRoundingHack(ParagraphStyle* style,
                                                        bool applyRoundingHack) {
   style->skiaParagraphStyle.setApplyRoundingHack(applyRoundingHack);

@@ -92,6 +92,12 @@ class ParagraphStyle {
   // Empty is no inset.
   std::vector<std::pair<double, double>> line_indents;
 
+  // Starling: room every line's break holds back while justification still
+  // stretches the line across the whole width (skparagraph's
+  // ParagraphStyle::setFitReserve, patches/skia-fit-reserve.patch). Zero is
+  // today's behaviour.
+  double fit_reserve = 0.0;
+
   // General paragraph properties.
   TextAlign text_align = TextAlign::start;
   TextDirection text_direction = TextDirection::ltr;
