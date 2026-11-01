@@ -2,6 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <cstring>
+#include <vector>
+
 #include "src/core/SkTypefaceCache.h"
 #include "include/font_collection_bridge.h"
 #include "include/swift_bridge_engine_registry.h"
@@ -17,6 +20,8 @@
 #include "txt/typeface_font_asset_provider.h"
 #include "flutter/fml/icu_util.h"
 
+#include <cstring>
+#include <vector>
 #include <cstdio>
 
 #include <memory>
@@ -239,6 +244,40 @@ bool LoadFontFromFile(const char* path, const char* family_name) {
   return RegisterFaceEverywhere(face, family_name ? family_name : "");
 }
 
+// CoreText's makeFromData refuses any face index but 0, so a face of a .ttc/.otc
+// collection is cut out into a stand-alone font file first. Table offsets in a
+// collection are absolute, so every record is rewritten. Returns null if the
+// bytes are not a collection or the index is out of range.
+static sk_sp<SkData> ExtractCollectionFace(const sk_sp<SkData>& in, int index) {
+  const uint8_t* d = static_cast<const uint8_t*>(in->data());
+  const size_t n = in->size();
+  auto u32 = [&](size_t o) -> uint32_t {
+    return o + 4 > n ? 0 : (uint32_t(d[o]) << 24) | (uint32_t(d[o + 1]) << 16) |
+                               (uint32_t(d[o + 2]) << 8) | d[o + 3];
+  };
+  if (n < 16 || u32(0) != 0x74746366 /* 'ttcf' */) return nullptr;
+  const uint32_t faces = u32(8);
+  if (static_cast<uint32_t>(index) >= faces) return nullptr;
+  const size_t face = u32(12 + 4 * size_t(index));
+  if (face + 12 > n) return nullptr;
+  const uint32_t tables = (uint32_t(d[face + 4]) << 8) | d[face + 5];
+  const size_t dir = 12 + 16 * size_t(tables);
+  if (face + dir > n) return nullptr;
+  std::vector<uint8_t> out(dir);
+  memcpy(out.data(), d + face, dir);
+  for (uint32_t t = 0; t < tables; ++t) {
+    const size_t rec = face + 12 + 16 * size_t(t);
+    const size_t off = u32(rec + 8), len = u32(rec + 12);
+    if (off > n || len > n - off) return nullptr;
+    while (out.size() % 4) out.push_back(0);
+    const uint32_t at = static_cast<uint32_t>(out.size());
+    out.insert(out.end(), d + off, d + off + len);
+    uint8_t* r = out.data() + 12 + 16 * size_t(t) + 8;
+    r[0] = at >> 24; r[1] = at >> 16; r[2] = at >> 8; r[3] = at;
+  }
+  return SkData::MakeWithCopy(out.data(), out.size());
+}
+
 bool LoadFontFromFileFace(const char* path,
                           const char* family_name,
                           int face_index) {
@@ -249,7 +288,13 @@ bool LoadFontFromFileFace(const char* path,
   if (!mgr) return false;
   // makeFromData's second argument is the face of a collection. An index past
   // the last face makes no typeface (null), and nothing is registered.
-  sk_sp<SkTypeface> face = mgr->makeFromData(std::move(bytes), face_index);
+  sk_sp<SkTypeface> face = mgr->makeFromData(bytes, face_index);
+  if (!face && face_index > 0) {
+    // CoreText (Mac, iOS) only takes face 0 from data: cut the face out.
+    if (sk_sp<SkData> one = ExtractCollectionFace(bytes, face_index)) {
+      face = mgr->makeFromData(std::move(one), 0);
+    }
+  }
   return RegisterFaceEverywhere(face, family_name ? family_name : "");
 }
 
