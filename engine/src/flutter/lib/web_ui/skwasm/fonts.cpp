@@ -43,6 +43,30 @@ SKWASM_EXPORT SkTypeface* typeface_create(SkData* fontData) {
   return typeface.release();
 }
 
+// Face `faceIndex` of a font collection (.ttc/.otc: Noto CJK ships SC, TC,
+// JP and KR in one file), the same semantics as the desktop bridge's
+// LoadFontFromFileFace: null for an index below 0 or past the last face.
+// `typeface_create` is face 0.
+SKWASM_EXPORT SkTypeface* typeface_createWithIndex(SkData* fontData,
+                                                   int faceIndex) {
+  if (faceIndex < 0) {
+    return nullptr;
+  }
+  auto typeface = default_fontmgr()->makeFromData(sk_ref_sp<SkData>(fontData),
+                                                  faceIndex);
+  if (!typeface) {
+    return nullptr;
+  }
+  liveTypefaceCount++;
+  return typeface.release();
+}
+
+// Loud probe, as the desktop build's StarlingTextFontFaceIndexSupported: a
+// caller that finds this export missing knows the engine is too old.
+SKWASM_EXPORT int starling_typeface_faceIndexSupported() {
+  return 1;
+}
+
 SKWASM_EXPORT void typeface_dispose(SkTypeface* typeface) {
   liveTypefaceCount--;
   typeface->unref();

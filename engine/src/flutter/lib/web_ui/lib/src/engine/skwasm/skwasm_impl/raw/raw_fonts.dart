@@ -26,6 +26,14 @@ external void fontCollectionDispose(FontCollectionHandle handle);
 @Native<TypefaceHandle Function(SkDataHandle)>(symbol: 'typeface_create', isLeaf: true)
 external TypefaceHandle typefaceCreate(SkDataHandle fontData);
 
+/// Face [faceIndex] of a font collection; a null handle when there is no such
+/// face. [typefaceCreate] is face 0.
+@Native<TypefaceHandle Function(SkDataHandle, Int)>(symbol: 'typeface_createWithIndex', isLeaf: true)
+external TypefaceHandle typefaceCreateWithIndex(SkDataHandle fontData, int faceIndex);
+
+@Native<Int Function()>(symbol: 'starling_typeface_faceIndexSupported', isLeaf: true)
+external int typefaceFaceIndexSupported();
+
 @Native<Void Function(TypefaceHandle)>(symbol: 'typeface_dispose', isLeaf: true)
 external void typefaceDispose(TypefaceHandle handle);
 
