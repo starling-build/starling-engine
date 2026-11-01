@@ -1,0 +1,21 @@
+# Order in which scripts/apply_engine_patches.sh applies the skia-*.patch files.
+# One file name per line; blank lines and # comments are ignored.
+#
+# Some patches are cut against the result of earlier ones, so glob (alphabetical)
+# order is not safe: skia-fit-reserve.patch touches lines that
+# skia-fractional-line-heights and skia-style-line-indents-metrics add, and fails
+# six hunks on a fresh tree if it goes first. A new patch goes at the END of
+# this list unless it was cut against a fresh tree, in which case anywhere does.
+# A skia-*.patch missing from this file is still applied, after the listed ones.
+skia-fractional-line-heights.patch
+skia-freetype-linear-size.patch
+skia-justify-ideographic-space.patch
+skia-long-word-next-line.patch
+skia-no-line-spacing-shift.patch
+skia-pdf-fake-bold.patch
+skia-run-shift-once.patch
+skia-scale-x.patch
+skia-shaper-scale-x.patch
+skia-stencil-nullcheck.patch
+skia-style-line-indents-metrics.patch
+skia-fit-reserve.patch

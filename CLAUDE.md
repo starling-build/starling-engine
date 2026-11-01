@@ -85,6 +85,12 @@ ninja -C out/host_debug   libflutter_linux_drm.so libflutter_engine.so
 ninja -C out/host_release libflutter_linux_drm.so libflutter_engine.so
 ```
 
+`flutter/tools/gn` no longer runs gn's include lint (`--check`), which reports
+errors on this fork (the Dart VM is gone, so `lib/ui` includes tonic headers it
+does not declare); `--gn-check` turns it back on. A fresh checkout now generates
+in one go. Skia patches apply in the order of `patches/series` — run
+`scripts/apply_engine_patches.sh` once, it needs no retry.
+
 Once `args.gn` exists, regenerating is just `flutter/third_party/gn/gn gen
 out/<config>`. Incremental rebuilds are seconds; a full config is ~4400 steps
 (~8 min on 12 cores). **Rebuild BOTH configs**: the dev runner prefers

@@ -14,6 +14,7 @@ need to be re-applied after a sync, before rebuilding the engine.
    ./scripts/apply_engine_patches.sh
    ```
 
+   Patches apply in the order of `patches/series` (some are cut against earlier ones; a new patch goes at the end).
    The script is idempotent — patches already applied are skipped.
 
 2. Rebuild the engine:

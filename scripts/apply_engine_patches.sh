@@ -34,7 +34,31 @@ applied=0
 skipped=0
 failed=0
 
+# Order: patches/series first (some patches build on earlier ones), then any
+# skia-*.patch the series does not name, in glob order.
+ordered=()
+if [ -f "${PATCH_DIR}/series" ]; then
+    while IFS= read -r line; do
+        line="${line%%#*}"
+        line="${line//[[:space:]]/}"
+        [ -n "${line}" ] || continue
+        if [ ! -f "${PATCH_DIR}/${line}" ]; then
+            echo "error: patches/series names ${line}, which does not exist" >&2
+            exit 1
+        fi
+        ordered+=("${PATCH_DIR}/${line}")
+    done < "${PATCH_DIR}/series"
+fi
 for patch_file in "${PATCH_DIR}"/skia-*.patch; do
+    listed=0
+    for o in "${ordered[@]+"${ordered[@]}"}"; do [ "${o}" = "${patch_file}" ] && listed=1 && break; done
+    if [ "${listed}" = 0 ]; then
+        [ -f "${PATCH_DIR}/series" ] && echo "  [note] $(basename "${patch_file}") is not in patches/series; applying it last"
+        ordered+=("${patch_file}")
+    fi
+done
+
+for patch_file in "${ordered[@]}"; do
     name=$(basename "${patch_file}")
 
     # Forward dry-run; if it fails with "previously applied", treat as skip.

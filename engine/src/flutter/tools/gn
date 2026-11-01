@@ -1071,6 +1071,14 @@ def parse_args(args):
   )
 
   parser.add_argument('--lto', default=True, action='store_true')
+  parser.add_argument(
+      '--gn-check',
+      dest='gn_check',
+      action='store_true',
+      default=False,
+      help='Run gn\'s include lint (gn gen --check). Off by default: it '
+      'reports errors on this fork that do not affect the build.'
+  )
   parser.add_argument('--no-lto', dest='lto', action='store_false')
 
   parser.add_argument('--clang', action='store_const', const=True)
@@ -1328,9 +1336,14 @@ def main(argv):
   command = [
       gn_binary(exe),
       'gen',
-      '--check',
       '--export-compile-commands',
   ]
+  # gn's include lint (`--check`) fails on this fork: with the Dart VM gone,
+  # `lib/ui` includes tonic headers it no longer declares a dependency on.
+  # It fails AFTER args.gn is written, so a fresh checkout looked half-generated.
+  # Opt back in with --gn-check.
+  if args.gn_check:
+    command.append('--check')
 
   if not args.web:
     if args.ide != '':
