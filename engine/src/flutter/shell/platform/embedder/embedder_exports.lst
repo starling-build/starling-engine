@@ -19,6 +19,10 @@
     # _ZN = non-const methods, _ZNK = const methods
     _ZN7flutter12swift_bridge*;
     _ZNK7flutter12swift_bridge*;
+    # The probe a Swift caller looks up (dlsym) before sending per-line
+    # indents; without it here the Linux engine reads as one that predates
+    # them and the indents are dropped.
+    StarlingText*;
 
     # DRM shell public API
     fl_drm_view_*;
