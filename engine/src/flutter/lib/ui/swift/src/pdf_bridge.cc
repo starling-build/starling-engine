@@ -20,6 +20,8 @@
 #include "third_party/skia/src/core/SkTextBlobPriv.h"
 #include "third_party/skia/src/base/SkUTF.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <string>
@@ -115,6 +117,106 @@ struct GlyphText {
   bool corrected = false;
 };
 
+// The post table's glyph names (format 2.0), one per glyph; empty when the
+// font has none.
+std::vector<std::string> PostGlyphNames(const sk_sp<SkTypeface>& typeface, int count) {
+  std::vector<std::string> names;
+  constexpr SkFontTableTag kPost = SkSetFourByteTag('p', 'o', 's', 't');
+  const size_t size = typeface->getTableSize(kPost);
+  if (size < 34) {
+    return names;
+  }
+  std::vector<uint8_t> data(size);
+  if (typeface->getTableData(kPost, 0, size, data.data()) != size) {
+    return names;
+  }
+  auto u16 = [&](size_t at) { return static_cast<uint32_t>(data[at] << 8 | data[at + 1]); };
+  if (u16(0) != 2 || u16(2) != 0) {
+    return names;  // not version 2.0 (0x00020000)
+  }
+  const uint32_t n = u16(32);
+  if (34 + 2 * static_cast<size_t>(n) > size) {
+    return names;
+  }
+  std::vector<std::string> custom;
+  for (size_t at = 34 + 2 * static_cast<size_t>(n); at < size;) {
+    const size_t len = data[at++];
+    if (at + len > size) {
+      break;
+    }
+    custom.emplace_back(reinterpret_cast<const char*>(&data[at]), len);
+    at += len;
+  }
+  names.resize(std::min<size_t>(n, count));
+  for (size_t g = 0; g < names.size(); g++) {
+    const uint32_t index = u16(34 + 2 * g);
+    if (index >= 258 && index - 258 < custom.size()) {
+      names[g] = custom[index - 258];
+    }
+  }
+  return names;
+}
+
+// The code point a glyph name spells: "uni0E48", "uni0E48.small", "u1F600".
+SkUnichar CodePointOfName(const std::string& name) {
+  size_t digits = 0;
+  size_t start = 0;
+  if (name.compare(0, 3, "uni") == 0) {
+    start = 3;
+    digits = 4;
+  } else if (name.size() > 1 && name[0] == 'u') {
+    start = 1;
+    for (digits = 0; start + digits < name.size() && std::isxdigit(static_cast<unsigned char>(name[start + digits])); digits++) {
+    }
+    if (digits < 4 || digits > 6) {
+      return 0;
+    }
+  } else {
+    return 0;
+  }
+  if (name.size() < start + digits) {
+    return 0;
+  }
+  // (Only the whole name or a dotted variant: "uni0E4D0E32" is two
+  // characters, and "u0E48_x" a ligature.)
+  if (name.size() > start + digits && name[start + digits] != '.') {
+    return 0;
+  }
+  SkUnichar value = 0;
+  for (size_t i = 0; i < digits; i++) {
+    const char c = name[start + i];
+    if (!std::isxdigit(static_cast<unsigned char>(c)) || std::islower(static_cast<unsigned char>(c))) {
+      return 0;
+    }
+    value = value * 16 + (std::isdigit(static_cast<unsigned char>(c)) ? c - '0' : c - 'A' + 10);
+  }
+  return value;
+}
+
+void NameUnmappedGlyphs(const sk_sp<SkTypeface>& typeface, GlyphText* entry);
+
+void NameUnmappedGlyphs(const sk_sp<SkTypeface>& typeface, GlyphText* entry) {
+  const int count = static_cast<int>(entry->unichars.size());
+  bool any = false;
+  for (SkUnichar u : entry->unichars) {
+    any = any || u == 0;
+  }
+  if (!any) {
+    return;
+  }
+  const std::vector<std::string> names = PostGlyphNames(typeface, count);
+  for (size_t g = 1; g < names.size(); g++) {
+    if (entry->unichars[g] != 0) {
+      continue;
+    }
+    const SkUnichar u = CodePointOfName(names[g]);
+    if (u > 0 && u != 0xFFFF) {
+      entry->unichars[g] = u;
+      entry->corrected = true;
+    }
+  }
+}
+
 class GlyphTextCache {
  public:
   const GlyphText& Get(const sk_sp<SkTypeface>& typeface, const SkFont& font) {
@@ -142,6 +244,14 @@ class GlyphTextCache {
       entry.unichars[ideograph] = pair.ideograph;
       entry.corrected = true;
     }
+    // A glyph with no code point of its own — a Thai tone mark drawn lower
+    // or narrower over a tall consonant, an Arabic mark's or a Devanagari
+    // matra's alternate form — is written to ToUnicode as U+0000, and the
+    // text copied out of the PDF has a stray character where the mark was
+    // ("ที่" read back as "ที,"). Such an alternate is named for its
+    // character in the font ("uni0E48.small", "uni0E34.narrow"): it takes
+    // the code point in the name.
+    NameUnmappedGlyphs(typeface, &entry);
     // A radical may share its glyph with a variant of its ideograph rather
     // than the ideograph itself: a Simplified Chinese face draws ⼾ (U+2F3E)
     // with its 户 (U+6237) and gives 戶 (U+6236), the table's ideograph, a
@@ -432,7 +542,9 @@ class PdfCanvasDispatcher : public DlSkCanvasDispatcher {
       if (!utf8.empty()) {
         std::memcpy(out.utf8text, utf8.data(), utf8.size());
       }
-      std::memcpy(out.clusters, clusters.data(), n * sizeof(uint32_t));
+      if (out.clusters) {
+        std::memcpy(out.clusters, clusters.data(), n * sizeof(uint32_t));
+      }
     }
     return builder.make();
   }
