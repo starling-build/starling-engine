@@ -1,0 +1,61 @@
+diff --git a/flutter/third_party/skia/modules/skparagraph/src/Run.cpp b/flutter/third_party/skia/modules/skparagraph/src/Run.cpp
+--- a/flutter/third_party/skia/modules/skparagraph/src/Run.cpp
++++ b/flutter/third_party/skia/modules/skparagraph/src/Run.cpp
+@@ -94,6 +94,13 @@
+     return {fGlyphs.data(), fPositions.data(), fOffsets.data(), fClusterIndexes.data(), fOffset};
+ }
+ 
++// The layout's own zero-width spacers: U+2060, U+200B and U+FEFF (UTF-8). They stand in no source.
++static bool isLayoutSpacer(const char* p) {
++    const uint8_t a = (uint8_t)p[0], b = (uint8_t)p[1], c = (uint8_t)p[2];
++    return (a == 0xE2 && b == 0x81 && c == 0xA0) || (a == 0xE2 && b == 0x80 && c == 0x8B) ||
++           (a == 0xEF && b == 0xBB && c == 0xBF);
++}
++
+ void Run::copyTo(SkTextBlobBuilder& builder, size_t pos, size_t size) const {
+     SkASSERT(pos + size <= this->size());
+     // The blob carries the text it shows and each glyph's place in it
+@@ -135,7 +142,7 @@
+         newOffset.assign(len + 1, 0);
+         for (size_t k = 0; k < len;) {
+             newOffset[k] = SkToU32(kept.size());
+-            if (k + 3 <= len && (uint8_t)src[k] == 0xE2 && (uint8_t)src[k + 1] == 0x81 && (uint8_t)src[k + 2] == 0xA0) {
++            if (k + 3 <= len && isLayoutSpacer(src + k)) {
+                 newOffset[k + 1] = newOffset[k + 2] = SkToU32(kept.size());
+                 k += 3;
+                 continue;
+@@ -164,16 +171,30 @@
+         }
+         return;
+     }
+-    const auto& blobBuffer = builder.allocRunPos(fFont, SkToInt(size));
+-    sk_careful_memcpy(blobBuffer.glyphs, fGlyphs.data() + pos, size * sizeof(SkGlyphID));
+-
++    // (A run whose clusters fall outside its text range takes no text, and a spacer glyph in it
++    // would copy out of a PDF as the character its font's cmap maps it back to — U+200B. A spacer
++    // draws nothing and every glyph has a position of its own, so it is left out of the blob.)
++    std::vector<size_t> shown;
++    shown.reserve(size);
+     for (size_t i = 0; i < size; ++i) {
++        bool spacer = false;
++        if (fOwner != nullptr) {
++            const size_t c = this->globalClusterIndex(pos + i);
++            spacer = c + 3 <= fOwner->text().size() && isLayoutSpacer(fOwner->text().data() + c);
++        }
++        if (!spacer) shown.push_back(i);
++    }
++    if (shown.empty()) return;
++    const auto& blobBuffer = builder.allocRunPos(fFont, SkToInt(shown.size()));
++    for (size_t n = 0; n < shown.size(); ++n) {
++        const size_t i = shown[n];
++        blobBuffer.glyphs[n] = fGlyphs[i + pos];
+         auto point = fPositions[i + pos];
+         if (!fJustificationShifts.empty()) {
+             point.fX += fJustificationShifts[i + pos].fX;
+         }
+         point += fOffsets[i + pos];
+-        blobBuffer.points()[i] = point;
++        blobBuffer.points()[n] = point;
+     }
+ }
+ 

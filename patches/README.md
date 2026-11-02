@@ -115,3 +115,8 @@ need to be re-applied after a sync, before rebuilding the engine.
   zero-width spacers (U+2060, U+200B, U+FEFF) are left out of the text and their
   glyphs share the neighbouring character's cluster. Checked by
   `test/tools/pdf-text-check.sh` in starling-desktop.
+- **`skia-run-spacer-glyphs.patch`** (cut against `skia-run-text-clusters.patch`) — keeps the
+  layout's zero-width spacers (U+200B, U+2060, U+FEFF) out of a PDF's text on every path:
+  the text-carrying blob drops all three from its text, and a run that takes the no-text
+  branch (its clusters fall outside its text range) leaves the spacer glyphs out of the
+  blob, since a glyph there is named through the font's cmap and copied out as U+200B.
