@@ -104,3 +104,14 @@ need to be re-applied after a sync, before rebuilding the engine.
   existing subpixel-size matrix correction still handles sizes below 1px.
   This removes the Mac native/skwasm word-boringcrypto wrap differences at
   screen scale, while its 220px PDF font already uses an exact 26.6 size.
+- **`skia-run-text-clusters.patch`** — skparagraph's `Run::copyTo` builds the
+  text blob with `allocRunPos`, so a glyph reaches the canvas with no text. A
+  PDF made from it names every glyph's characters by reversing the font's cmap,
+  and a glyph that no cmap entry reaches — a Devanagari conjunct, an Arabic
+  ligature, a Thai tone mark drawn lower — came out as U+0000 (copy and paste
+  gave `यय हहदद` for `क्षत्रिय हिन्दी`). The blob now carries the run's text and
+  each glyph's UTF-8 offset into it (`allocRunTextPos`), so Skia writes
+  `/ActualText` where a glyph's text is not the cmap's. The layout's own
+  zero-width spacers (U+2060, U+200B, U+FEFF) are left out of the text and their
+  glyphs share the neighbouring character's cluster. Checked by
+  `test/tools/pdf-text-check.sh` in starling-desktop.

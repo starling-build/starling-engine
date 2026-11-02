@@ -1,0 +1,78 @@
+diff --git a/flutter/third_party/skia/modules/skparagraph/src/Run.cpp b/flutter/third_party/skia/modules/skparagraph/src/Run.cpp
+--- a/flutter/third_party/skia/modules/skparagraph/src/Run.cpp
++++ b/flutter/third_party/skia/modules/skparagraph/src/Run.cpp
+@@ -96,6 +96,74 @@
+ 
+ void Run::copyTo(SkTextBlobBuilder& builder, size_t pos, size_t size) const {
+     SkASSERT(pos + size <= this->size());
++    // The blob carries the text it shows and each glyph's place in it
++    // (UTF-8 byte offsets), so that a PDF made from it can name every glyph's
++    // characters: a Devanagari conjunct, an Arabic ligature or a Thai tone
++    // mark drawn as a form of its own is in no font's cmap, and without the
++    // text a PDF's ToUnicode has U+0000 for it.
++    size_t textLo = 0, textHi = 0;
++    bool withText = false;
++    if (size > 0 && fOwner != nullptr) {
++        const size_t total = this->size();
++        auto at = [&](size_t i) { return this->globalClusterIndex(i); };
++        if (leftToRight()) {
++            textLo = at(pos);
++            size_t j = pos + size;
++            while (j < total && at(j) == at(pos + size - 1)) j++;
++            textHi = j < total ? at(j) : fTextRange.end;
++        } else {
++            textLo = at(pos + size - 1);
++            size_t j = pos;
++            while (j > 0 && at(j - 1) == at(pos)) j--;
++            textHi = j > 0 ? at(j - 1) : fTextRange.end;
++        }
++        withText = textLo < textHi && textHi <= fOwner->text().size() && textHi - textLo <= 4096;
++        for (size_t i = 0; withText && i < size; ++i) {
++            const size_t c = at(pos + i);
++            withText = c >= textLo && c < textHi;
++        }
++    }
++    // (The layout's own U+2060 spacers are not text: they stand in no source
++    // and would copy out as invisible joiners between the characters. Their
++    // glyphs share the cluster of the character that follows — or precedes,
++    // at the end — so a PDF reads them as part of it.)
++    std::string kept;
++    std::vector<uint32_t> newOffset;
++    if (withText) {
++        const char* src = fOwner->text().data() + textLo;
++        const size_t len = textHi - textLo;
++        newOffset.assign(len + 1, 0);
++        for (size_t k = 0; k < len;) {
++            newOffset[k] = SkToU32(kept.size());
++            if (k + 3 <= len && (uint8_t)src[k] == 0xE2 && (uint8_t)src[k + 1] == 0x81 && (uint8_t)src[k + 2] == 0xA0) {
++                newOffset[k + 1] = newOffset[k + 2] = SkToU32(kept.size());
++                k += 3;
++                continue;
++            }
++            kept.push_back(src[k]);
++            k++;
++        }
++        newOffset[len] = SkToU32(kept.size());
++        withText = !kept.empty();
++    }
++    if (withText) {
++        size_t lastStart = kept.size() - 1;
++        while (lastStart > 0 && (kept[lastStart] & 0xC0) == 0x80) lastStart--;
++        const auto& blobBuffer = builder.allocRunTextPos(fFont, SkToInt(size), SkToInt(kept.size()));
++        sk_careful_memcpy(blobBuffer.glyphs, fGlyphs.data() + pos, size * sizeof(SkGlyphID));
++        sk_careful_memcpy(blobBuffer.utf8text, kept.data(), kept.size());
++        for (size_t i = 0; i < size; ++i) {
++            uint32_t offset = newOffset[this->globalClusterIndex(pos + i) - textLo];
++            blobBuffer.clusters[i] = offset < kept.size() ? offset : SkToU32(lastStart);
++            auto point = fPositions[i + pos];
++            if (!fJustificationShifts.empty()) {
++                point.fX += fJustificationShifts[i + pos].fX;
++            }
++            point += fOffsets[i + pos];
++            blobBuffer.points()[i] = point;
++        }
++        return;
++    }
+     const auto& blobBuffer = builder.allocRunPos(fFont, SkToInt(size));
+     sk_careful_memcpy(blobBuffer.glyphs, fGlyphs.data() + pos, size * sizeof(SkGlyphID));
+ 

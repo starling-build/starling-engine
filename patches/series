@@ -19,3 +19,4 @@ skia-shaper-scale-x.patch
 skia-stencil-nullcheck.patch
 skia-style-line-indents-metrics.patch
 skia-fit-reserve.patch
+skia-run-text-clusters.patch
