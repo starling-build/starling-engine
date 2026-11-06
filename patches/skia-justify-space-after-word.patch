@@ -1,0 +1,20 @@
+diff --git a/flutter/third_party/skia/modules/skparagraph/src/Run.cpp b/flutter/third_party/skia/modules/skparagraph/src/Run.cpp
+index 263b698..26d1d26 100644
+--- a/flutter/third_party/skia/modules/skparagraph/src/Run.cpp
++++ b/flutter/third_party/skia/modules/skparagraph/src/Run.cpp
+@@ -164,7 +164,14 @@ void Run::copyTo(SkTextBlobBuilder& builder, size_t pos, size_t size) const {
+             blobBuffer.clusters[i] = offset < kept.size() ? offset : SkToU32(lastStart);
+             auto point = fPositions[i + pos];
+             if (!fJustificationShifts.empty()) {
+-                point.fX += fJustificationShifts[i + pos].fX;
++                // (A space of a stretched line sits right after the word before it, as Word
++                // prints it, so that a PDF reader's text keeps the line whole; the space is
++                // blank, so the page looks the same. fY is the shift of the cluster before.)
++                const size_t c = this->globalClusterIndex(pos + i);
++                const bool blank = leftToRight() && c < fOwner->text().size() &&
++                                   fOwner->text().data()[c] == ' ';
++                point.fX += blank ? fJustificationShifts[i + pos].fY
++                                  : fJustificationShifts[i + pos].fX;
+             }
+             point += fOffsets[i + pos];
+             blobBuffer.points()[i] = point;

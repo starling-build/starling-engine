@@ -120,3 +120,7 @@ need to be re-applied after a sync, before rebuilding the engine.
   the text-carrying blob drops all three from its text, and a run that takes the no-text
   branch (its clusters fall outside its text range) leaves the spacer glyphs out of the
   blob, since a glyph there is named through the font's cmap and copied out as U+200B.
+- skia-justify-space-after-word.patch: in a justified (stretched) line a space glyph is written to the
+  PDF right after the word before it (the shift of the cluster before), as Word's print has it, not
+  just before the next word; a reader's text then keeps the line whole instead of one line per word.
+  The space is blank, so the page looks the same.
