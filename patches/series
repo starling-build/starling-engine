@@ -21,3 +21,4 @@ skia-style-line-indents-metrics.patch
 skia-fit-reserve.patch
 skia-run-text-clusters.patch
 skia-run-spacer-glyphs.patch
+skia-ink-shift-friend.patch

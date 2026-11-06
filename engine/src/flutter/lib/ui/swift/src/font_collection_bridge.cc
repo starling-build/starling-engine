@@ -2,11 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 
 #include "src/core/SkTypefaceCache.h"
 #include "include/font_collection_bridge.h"
+#include "font_ink_shift.h"
 #include "include/swift_bridge_engine_registry.h"
 
 // Flutter engine headers (only in .cc file)
@@ -278,6 +280,7 @@ static sk_sp<SkData> ExtractCollectionFace(const sk_sp<SkData>& in, int index) {
   return SkData::MakeWithCopy(out.data(), out.size());
 }
 
+
 bool LoadFontFromFileFace(const char* path,
                           const char* family_name,
                           int face_index) {
@@ -294,6 +297,12 @@ bool LoadFontFromFileFace(const char* path,
     if (sk_sp<SkData> one = ExtractCollectionFace(bytes, face_index)) {
       face = mgr->makeFromData(std::move(one), 0);
     }
+  }
+  // Starling: a family named "Ink+<em> <name>" registers the face drawn
+  // <em> of its em lower than its outlines stand (see InkShiftTypeface).
+  if (face && family_name && std::strncmp(family_name, "Ink+", 4) == 0) {
+    const double shift = std::atof(family_name + 4);
+    if (shift != 0) face = sk_sp<SkTypeface>(new StarlingInkShiftTypeface(face, shift));
   }
   return RegisterFaceEverywhere(face, family_name ? family_name : "");
 }

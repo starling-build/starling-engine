@@ -1,0 +1,28 @@
+Skia: friend declarations for Starling's ink-shift typeface
+
+StarlingInkShiftTypeface and StarlingInkShiftScalerContext (flutter/lib/ui/swift/src/font_ink_shift.h) wrap a registered face and draw its outlines a fraction of the em lower, leaving advances, metrics, tables and the glyph-to-character map those of the wrapped face. They need the protected/private members of SkTypeface and SkScalerContext that SkRandomTypeface and RandomScalerContext already reach this way.
+
+diff --git a/flutter/third_party/skia/include/core/SkTypeface.h b/flutter/third_party/skia/include/core/SkTypeface.h
+index 8e34f088d1..1b3dbdfbaf 100644
+--- a/flutter/third_party/skia/include/core/SkTypeface.h
++++ b/flutter/third_party/skia/include/core/SkTypeface.h
+@@ -465,6 +465,7 @@ private:
+     friend class SkRandomTypeface;   // getAdvancedMetrics
+     friend class SkPDFFont;          // getAdvancedMetrics
+     friend class SkTypeface_proxy;
++    friend class StarlingInkShiftTypeface;  // forwards every virtual to the face it wraps
+     friend class SkFontPriv;         // getGlyphToUnicodeMap
+     friend void TestSkTypefaceGlyphToUnicodeMap(SkTypeface&, SkSpan<SkUnichar>);
+ 
+diff --git a/flutter/third_party/skia/src/core/SkScalerContext.h b/flutter/third_party/skia/src/core/SkScalerContext.h
+index 4072a852da..7c4db882ee 100644
+--- a/flutter/third_party/skia/src/core/SkScalerContext.h
++++ b/flutter/third_party/skia/src/core/SkScalerContext.h
+@@ -453,6 +453,7 @@ private:
+     friend class PathTextBench;  // For debug purposes
+     friend class RandomScalerContext;  // For debug purposes
+     friend class SkScalerContext_proxy;
++    friend class StarlingInkShiftScalerContext;  // wraps another face's scaler context
+ 
+     static SkScalerContextRec PreprocessRec(const SkTypeface&,
+                                             const SkScalerContextEffects&,
