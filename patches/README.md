@@ -124,3 +124,4 @@ need to be re-applied after a sync, before rebuilding the engine.
   PDF right after the word before it (the shift of the cluster before), as Word's print has it, not
   just before the next word; a reader's text then keeps the line whole instead of one line per word.
   The space is blank, so the page looks the same.
+- skia-rtl-paint-logical-order.patch: a text line that holds a right-to-left run paints its blobs in logical (text) order, not visual order, so the PDF's text layer reads each Arabic/Hebrew line in the order Word writes it. Glyph positions are unchanged; only the order of the draw calls moves.

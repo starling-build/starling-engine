@@ -1,0 +1,56 @@
+diff --git a/flutter/third_party/skia/modules/skparagraph/src/TextLine.cpp b/flutter/third_party/skia/modules/skparagraph/src/TextLine.cpp
+index a9b0021..4c15067 100644
+--- a/flutter/third_party/skia/modules/skparagraph/src/TextLine.cpp
++++ b/flutter/third_party/skia/modules/skparagraph/src/TextLine.cpp
+@@ -210,8 +210,28 @@ void TextLine::paint(ParagraphPainter* painter, SkScalar x, SkScalar y) {
+ 
+     this->ensureTextBlobCachePopulated();
+ 
++    // A line with right-to-left text is painted in reading order (the PDF text
++    // layer then reads it as Word's print does); the pixels are the same.
++    bool anyRtl = false;
+     for (auto& record : fTextBlobCache) {
+-        record.paint(painter, x, y);
++        anyRtl = anyRtl || record.fRtl;
++    }
++    if (anyRtl) {
++        std::vector<const TextBlobRecord*> ordered;
++        for (auto& record : fTextBlobCache) {
++            ordered.push_back(&record);
++        }
++        std::stable_sort(ordered.begin(), ordered.end(),
++                         [](const TextBlobRecord* l, const TextBlobRecord* r) {
++                             return l->fLogicalStart < r->fLogicalStart;
++                         });
++        for (auto* record : ordered) {
++            const_cast<TextBlobRecord*>(record)->paint(painter, x, y);
++        }
++    } else {
++        for (auto& record : fTextBlobCache) {
++            record.paint(painter, x, y);
++        }
+     }
+ 
+     if (fHasDecorations) {
+@@ -357,6 +377,8 @@ void TextLine::buildTextBlob(TextRange textRange, const TextStyle& style, const
+     }
+     record.fVisitor_Run = context.run;
+     record.fVisitor_Pos = context.pos;
++    record.fLogicalStart = textRange.start;
++    record.fRtl = !context.run->leftToRight();
+ 
+     // TODO: This is the change for flutter, must be removed later
+     SkTextBlobBuilder builder;
+diff --git a/flutter/third_party/skia/modules/skparagraph/src/TextLine.h b/flutter/third_party/skia/modules/skparagraph/src/TextLine.h
+index ca8993e..2c27e52 100644
+--- a/flutter/third_party/skia/modules/skparagraph/src/TextLine.h
++++ b/flutter/third_party/skia/modules/skparagraph/src/TextLine.h
+@@ -204,6 +204,8 @@ private:
+         // Extra fields only used for the (experimental) visitor
+         const Run* fVisitor_Run;
+         size_t     fVisitor_Pos;
++        size_t     fLogicalStart = 0;  // first text index of the blob
++        bool       fRtl = false;
+     };
+     bool fTextBlobCachePopulated;
+ public:
