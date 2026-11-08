@@ -1,0 +1,106 @@
+diff --git a/flutter/third_party/skia/modules/skparagraph/src/TextLine.cpp b/flutter/third_party/skia/modules/skparagraph/src/TextLine.cpp
+--- a/flutter/third_party/skia/modules/skparagraph/src/TextLine.cpp
++++ b/flutter/third_party/skia/modules/skparagraph/src/TextLine.cpp
+@@ -491,6 +491,10 @@
+     SkScalar textLen = 0;
+     SkScalar whitespaceLen = 0;
+     bool whitespacePatch = false;
++    // (Starling) Word stretches every space of a run, so "a  b" has two gaps; skparagraph made the whole run one.
++    // A zero-width mark (the line layout's ZWSP after a space) stays in the patch of the space it follows.
++    bool prevSpaceWide = false;
++    int trailingPatches = 0;
+     // Take leading whitespaces width but do not increment a whitespace patch number
+     bool leadingWhitespaces = false;
+     this->iterateThroughClustersInGlyphsOrder(false, false,
+@@ -498,11 +502,13 @@
+             if (isSpreadSpace(cluster)) {
+                 if (index == 0) {
+                     leadingWhitespaces = true;
+-                } else if (!whitespacePatch && !leadingWhitespaces) {
++                } else if (!leadingWhitespaces && (!whitespacePatch || (prevSpaceWide && cluster->width() > 0))) {
+                     // We only count patches BETWEEN words, not before
+                     ++whitespacePatches;
++                    trailingPatches = whitespacePatch ? trailingPatches + 1 : 1;
+                 }
+                 whitespacePatch = !leadingWhitespaces;
++                prevSpaceWide = cluster->width() > 0;
+                 whitespaceLen += cluster->width();
+             } else if (isSpreadIdeograph(cluster)) {
+                 // Whitespace break before and after
+@@ -511,10 +517,14 @@
+                     ++whitespacePatches; // before
+                 }
+                 whitespacePatch = true;
++                prevSpaceWide = false;
++                trailingPatches = 0;
+                 leadingWhitespaces = false;
+                 ++whitespacePatches;    // after
+             } else {
+                 whitespacePatch = false;
++                prevSpaceWide = false;
++                trailingPatches = 0;
+                 leadingWhitespaces = false;
+             }
+             textLen += cluster->width();
+@@ -523,7 +533,7 @@
+ 
+     if (whitespacePatch) {
+         // We only count patches BETWEEN words, not after
+-        --whitespacePatches;
++        whitespacePatches -= std::max(trailingPatches, 1);
+     }
+     if (whitespacePatches == 0) {
+         if (fOwner->paragraphStyle().getTextDirection() == TextDirection::kRtl) {
+@@ -541,6 +551,8 @@
+     auto ghostShift = maxWidth - this->fAdvance.fX;
+     // Spread the extra whitespaces
+     whitespacePatch = false;
++    prevSpaceWide = false;
++    int shiftedPatches = 0;
+     // Do not break on leading whitespaces
+     leadingWhitespaces = false;
+     this->iterateThroughClustersInGlyphsOrder(false, true, [&](const Cluster* cluster, ClusterIndex index, bool ghost) {
+@@ -555,11 +567,13 @@
+         if (isSpreadSpace(cluster)) {
+             if (index == 0) {
+                 leadingWhitespaces = true;
+-            } else if (!whitespacePatch && !leadingWhitespaces) {
++            } else if (!leadingWhitespaces && (!whitespacePatch || (prevSpaceWide && cluster->width() > 0))) {
+                 shift += step;
++                shiftedPatches = whitespacePatch ? shiftedPatches + 1 : 1;
+                 whitespacePatch = true;
+                 --whitespacePatches;
+             }
++            prevSpaceWide = cluster->width() > 0;
+             shift -= cluster->width();
+         } else if (isSpreadIdeograph(cluster)) {
+             if (!whitespacePatch && index != 0) {
+@@ -570,6 +584,8 @@
+             leadingWhitespaces = false;
+         } else {
+             whitespacePatch = false;
++            prevSpaceWide = false;
++            shiftedPatches = 0;
+             leadingWhitespaces = false;
+         }
+         this->shiftCluster(cluster, shift, prevShift);
+@@ -577,6 +593,7 @@
+         // We skip ideographic whitespaces
+         if (!isSpreadSpace(cluster) && isSpreadIdeograph(cluster)) {
+             shift += step;
++            shiftedPatches = 0;
+             whitespacePatch = true;
+             --whitespacePatches;
+         }
+@@ -584,8 +601,9 @@
+     });
+ 
+     if (whitespacePatch && whitespacePatches < 0) {
+-        whitespacePatches++;
+-        shift -= step;
++        const int undo = std::max(shiftedPatches, 1);
++        whitespacePatches += undo;
++        shift -= step * undo;
+     }
+ 
+     SkAssertResult(nearlyEqual(shift, maxWidth - textLen));
