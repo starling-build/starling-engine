@@ -1,0 +1,30 @@
+diff --git a/flutter/third_party/skia/modules/skunicode/src/SkUnicode_icu.cpp b/flutter/third_party/skia/modules/skunicode/src/SkUnicode_icu.cpp
+--- a/flutter/third_party/skia/modules/skunicode/src/SkUnicode_icu.cpp
++++ b/flutter/third_party/skia/modules/skunicode/src/SkUnicode_icu.cpp
+@@ -590,11 +590,17 @@
+ 
+         const char* current = utf8;
+         const char* end = utf8 + utf8Units;
++        SkUnichar previous = 0;
+         while (current < end) {
+             auto before = current - utf8;
+             SkUnichar unichar = SkUTF::NextUTF8(&current, end);
+             if (unichar < 0) unichar = 0xFFFD;
+             auto after = current - utf8;
++            // (Starling) A zero-width space right after a space is part of that space: the layout
++            // puts one there to let a line part before a word, and the line then ends after it,
++            // so the space before it stood inside the line and was never hung or trimmed.
++            const bool spaceMark = unichar == 0x200B && previous == ' ';
++            previous = unichar;
+             if (replaceTabs && this->isTabulation(unichar)) {
+                 results->at(before) |= SkUnicode::kTabulation;
+                 if (replaceTabs) {
+@@ -606,7 +612,7 @@
+                 if (this->isSpace(unichar)) {
+                     results->at(i) |= SkUnicode::kPartOfIntraWordBreak;
+                 }
+-                if (this->isWhitespace(unichar)) {
++                if (this->isWhitespace(unichar) || spaceMark) {
+                     results->at(i) |= SkUnicode::kPartOfWhiteSpaceBreak;
+                 }
+                 if (this->isControl(unichar)) {
