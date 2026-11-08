@@ -125,9 +125,3 @@ need to be re-applied after a sync, before rebuilding the engine.
   just before the next word; a reader's text then keeps the line whole instead of one line per word.
   The space is blank, so the page looks the same.
 - skia-rtl-paint-logical-order.patch: a text line that holds a right-to-left run paints its blobs in logical (text) order, not visual order, so the PDF's text layer reads each Arabic/Hebrew line in the order Word writes it. Glyph positions are unchanged; only the order of the draw calls moves.
-- skia-pdf-hanging-mark-outline.patch: our painter draws each paragraph line under its own clip band, and a
-  mark that hangs below the baseline (Telugu subjoined conjunct forms) is also culled in as text when the
-  next line's band is painted. That second copy was written after the following words, so search and copy
-  read stray letters (a lone virama U+0C4D) out of order. A glyph whose origin is outside the clip but whose
-  ink reaches into it is now drawn as an outline (same ink, no text); the line's own text copy is kept.
-  Checked: the page looks the same (17 of 111,000 pixels), virama counts equal the docx's.
