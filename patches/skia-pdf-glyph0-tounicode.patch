@@ -1,0 +1,16 @@
+diff --git a/flutter/third_party/skia/src/pdf/SkPDFDevice.cpp b/flutter/third_party/skia/src/pdf/SkPDFDevice.cpp
+index 2b25ef567b..3bdf4d2367 100644
+--- a/flutter/third_party/skia/src/pdf/SkPDFDevice.cpp
++++ b/flutter/third_party/skia/src/pdf/SkPDFDevice.cpp
+@@ -1059,7 +1059,10 @@ void SkPDFDevice::internalDrawGlyphRun(
+             const char* textEnd = c.fUtf8Text + c.fTextByteLength;
+             SkUnichar clusterUnichar = SkUTF::NextUTF8(&textPtr, textEnd);
+             // ToUnicode can only handle one glyph in a cluster.
+-            if (clusterUnichar >= 0 && c.fGlyphCount == 1) {
++            // Glyph 0 (.notdef) has no ToUnicode entry (the cmap sections start at
++            // glyph 1), so a cluster drawn with it always needs ActualText: otherwise
++            // the first character seen is recorded and every later copy extracts as NUL.
++            if (clusterUnichar >= 0 && c.fGlyphCount == 1 && glyphIDs[glyphIndex] != 0) {
+                 SkGlyphID gid = glyphIDs[glyphIndex];
+                 SkUnichar fontUnichar = gid < glyphToUnicode.size() ? glyphToUnicode[gid] : 0;
+ 
