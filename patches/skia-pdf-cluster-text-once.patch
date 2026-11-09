@@ -32,15 +32,13 @@
          SK_AT_SCOPE_EXIT(if (actualText) {
                               glyphPositioner.flush();
                               out->writeText("EMC\n");
-@@ -1088,11 +1106,13 @@
+@@ -1088,8 +1106,13 @@
              if (!toUnicode) {
                  glyphPositioner.flush();
                  // Begin marked-content sequence with associated property list.
--                // A cluster of several glyphs carries its text once, on its LAST glyph: an
-+                // A cluster of several glyphs carries its text once, on its FIRST glyph: an
-                 // extractor that repeats a span's ActualText for every glyph in it (MuPDF)
--                // would double it. The glyphs before the last sit in a span with empty text.
-+                // would double it. The glyphs after the first sit in a span with empty text.
++                // A cluster of several glyphs carries its text once, on its LAST glyph: an
++                // extractor that repeats a span's ActualText for every glyph in it (MuPDF)
++                // would double it. The glyphs before the last sit in a span with empty text.
                  out->writeText("/Span<</ActualText ");
 -                SkPDFWriteTextString(out, c.fUtf8Text, c.fTextByteLength);
 +                // several glyphs: the text goes on the LAST glyph; the glyphs before it sit in an empty span
@@ -49,7 +47,7 @@
                  out->writeText(" >> BDC\n");
                  actualText = true;
              }
-@@ -1129,6 +1149,13 @@
+@@ -1126,6 +1149,13 @@
  
              }
              font->noteGlyphUsage(gid);
