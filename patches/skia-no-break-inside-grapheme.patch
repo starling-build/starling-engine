@@ -1,0 +1,36 @@
+--- a/flutter/third_party/skia/modules/skparagraph/src/TextWrapper.cpp
++++ b/flutter/third_party/skia/modules/skparagraph/src/TextWrapper.cpp
+@@ -60,11 +60,31 @@
+     LineBreakerWithLittleRounding breaker(maxWidth, applyRoundingHack);
+     Cluster* nextNonBreakingSpace = nullptr;
+     for (auto cluster = fEndLine.endCluster(); cluster < endOfClusters; ++cluster) {
++        // (Starling) A line breaks between graphemes, not inside one: a
++        // consonant and its vowel sign (म + ा) are two glyph clusters
++        // but one character to Word, which moves the pair whole — a
++        // word wider than its cell broke "कार्यान्वयनम" | "ा". A
++        // cluster after the first of its grapheme is never the one
++        // that does not fit, and the first is weighed with the rest
++        // of its grapheme. Not at the width-1 probe (which wants the
++        // clusters), and not as the first thing on a line (a grapheme
++        // wider than the line is parted, as before).
++        bool continuesGrapheme = false;
++        SkScalar graphemeWidth = cluster->width();
++        if (maxWidth > 1 && !(fWords.empty() && fClusters.empty()) && !cluster->run().isPlaceholder()) {
++            continuesGrapheme = cluster > fEndLine.startCluster() && !(cluster - 1)->isGraphemeBreak();
++            if (!continuesGrapheme) {
++                for (auto g = cluster; !g->isGraphemeBreak() && g + 1 < endOfClusters && !(g + 1)->run().isPlaceholder(); ) {
++                    ++g;
++                    graphemeWidth += g->width();
++                }
++            }
++        }
+         if (cluster->isHardBreak()) {
+         } else if (
+                 // TODO: Trying to deal with flutter rounding problem. Must be removed...
+-                SkScalar width = fWords.width() + fClusters.width() + cluster->width();
+-                breaker.breakLine(width)) {
++                SkScalar width = fWords.width() + fClusters.width() + graphemeWidth;
++                !continuesGrapheme && breaker.breakLine(width)) {
+             if (cluster->isWhitespaceBreak()) {
+                 // It's the end of the word
+                 fClusters.extend(cluster);
