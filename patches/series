@@ -27,3 +27,4 @@ skia-rtl-paint-logical-order.patch
 skia-pdf-glyph0-tounicode.patch
 skia-space-then-zwsp-is-space.patch
 skia-justify-every-space.patch
+skia-pdf-cluster-text-once.patch

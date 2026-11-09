@@ -1,0 +1,65 @@
+--- a/flutter/third_party/skia/src/pdf/SkPDFDevice.cpp
++++ b/flutter/third_party/skia/src/pdf/SkPDFDevice.cpp
+@@ -772,6 +772,23 @@
+ ////////////////////////////////////////////////////////////////////////////////
+ 
+ namespace {
++// A cluster with a virama (conjunct, reph) keeps its text in one span over all its glyphs: its glyphs are not in
++// logical order, so splitting the text onto one glyph lost reph text in the Marathi print (xs 72d5ef87).
++bool cluster_has_virama(const char* t, size_t n) {
++    for (size_t i = 0; i + 2 < n; ++i) {
++        if ((uint8_t)t[i] < 0xE0 || (uint8_t)t[i] > 0xEF) continue;
++        unsigned cp = ((t[i] & 0xF) << 12) | ((t[i + 1] & 0x3F) << 6) | (t[i + 2] & 0x3F);
++        switch (cp) {
++            case 0x94D: case 0x9CD: case 0xA4D: case 0xACD: case 0xB4D: case 0xBCD: case 0xC4D:
++            case 0xCCD: case 0xD4D: case 0xDCA: case 0x1039: case 0x17D2: return true;
++            default: break;
++        }
++    }
++    return false;
++}
++}  // namespace
++
++namespace {
+ class GlyphPositioner {
+ public:
+     GlyphPositioner(SkDynamicMemoryWStream* content,
+@@ -1049,6 +1066,7 @@
+         int glyphLimit = glyphIndex + c.fGlyphCount;
+ 
+         bool actualText = false;
++        bool splitText = false;  // the open span holds the cluster's full text; it closes after the first glyph written
+         SK_AT_SCOPE_EXIT(if (actualText) {
+                              glyphPositioner.flush();
+                              out->writeText("EMC\n");
+@@ -1088,11 +1106,13 @@
+             if (!toUnicode) {
+                 glyphPositioner.flush();
+                 // Begin marked-content sequence with associated property list.
+-                // A cluster of several glyphs carries its text once, on its LAST glyph: an
++                // A cluster of several glyphs carries its text once, on its FIRST glyph: an
+                 // extractor that repeats a span's ActualText for every glyph in it (MuPDF)
+-                // would double it. The glyphs before the last sit in a span with empty text.
++                // would double it. The glyphs after the first sit in a span with empty text.
+                 out->writeText("/Span<</ActualText ");
+-                SkPDFWriteTextString(out, c.fUtf8Text, c.fTextByteLength);
++                // several glyphs: the text goes on the LAST glyph; the glyphs before it sit in an empty span
++                splitText = c.fGlyphCount > 1 && !cluster_has_virama(c.fUtf8Text, c.fTextByteLength);
++                SkPDFWriteTextString(out, splitText ? "" : c.fUtf8Text, splitText ? 0 : c.fTextByteLength);
+                 out->writeText(" >> BDC\n");
+                 actualText = true;
+             }
+@@ -1129,6 +1149,13 @@
+ 
+             }
+             font->noteGlyphUsage(gid);
++            if (splitText && glyphIndex == glyphLimit - 1) {
++                glyphPositioner.flush();
++                out->writeText("EMC\n/Span<</ActualText ");
++                SkPDFWriteTextString(out, c.fUtf8Text, c.fTextByteLength);
++                out->writeText(" >> BDC\n");
++                splitText = false;
++            }
+             SkGlyphID encodedGlyph = font->glyphToPDFFontEncoding(gid);
+             SkScalar advance = advanceScale * glyphs[glyphIndex]->advanceX();
+             if (fMarkManager.hasActiveMark()) {
