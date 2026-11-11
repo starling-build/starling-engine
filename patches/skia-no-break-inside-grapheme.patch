@@ -21,7 +21,7 @@
 +                SkScalar net = cluster->width();
 +                for (auto g = cluster; !g->isGraphemeBreak() && g + 1 < endOfClusters && !(g + 1)->run().isPlaceholder(); ) {
 +                    ++g;
-+                    net += g->width();  // the widest running prefix: a negative-width mark must not pull an overflowing base under the limit
++                    net += g->width();  // weigh by the widest running prefix: a negative-width mark must not pull an overflowing base under the limit
 +                    graphemeWidth = std::max(graphemeWidth, net);
 +                }
 +            }
@@ -36,3 +36,20 @@
              if (cluster->isWhitespaceBreak()) {
                  // It's the end of the word
                  fClusters.extend(cluster);
+@@ -162,6 +184,16 @@
+                 fClusters.extend(cluster);
+                 fTooLongCluster = true;
+                 fTooLongWord = true;
++            } else if (fWords.empty() && !fClusters.empty() && cluster->textRange().width() == 3) {
++                // (Starling) A danda (U+0964, U+0965) may not start a line:
++                // when the first word of a line is parted, Word keeps a final danda
++                // with the letters before it and lets it overflow (a "13|"
++                // number in a 27 pt cell stays on one line).
++                const char* t = cluster->run().owner()->text().data() + cluster->textRange().start;
++                if ((unsigned char)t[0] == 0xE0 && (unsigned char)t[1] == 0xA5 &&
++                    ((unsigned char)t[2] == 0xA4 || (unsigned char)t[2] == 0xA5)) {
++                    fClusters.extend(cluster);
++                }
+             }
+             break;
+         }
