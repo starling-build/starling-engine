@@ -1,6 +1,6 @@
 --- a/flutter/third_party/skia/modules/skparagraph/src/TextWrapper.cpp
 +++ b/flutter/third_party/skia/modules/skparagraph/src/TextWrapper.cpp
-@@ -60,11 +60,31 @@
+@@ -60,11 +60,33 @@
      LineBreakerWithLittleRounding breaker(maxWidth, applyRoundingHack);
      Cluster* nextNonBreakingSpace = nullptr;
      for (auto cluster = fEndLine.endCluster(); cluster < endOfClusters; ++cluster) {
@@ -18,9 +18,11 @@
 +        if (maxWidth > 1 && !(fWords.empty() && fClusters.empty()) && !cluster->run().isPlaceholder()) {
 +            continuesGrapheme = cluster > fEndLine.startCluster() && !(cluster - 1)->isGraphemeBreak();
 +            if (!continuesGrapheme) {
++                SkScalar net = cluster->width();
 +                for (auto g = cluster; !g->isGraphemeBreak() && g + 1 < endOfClusters && !(g + 1)->run().isPlaceholder(); ) {
 +                    ++g;
-+                    graphemeWidth += g->width();
++                    net += g->width();  // the widest running prefix: a negative-width mark must not pull an overflowing base under the limit
++                    graphemeWidth = std::max(graphemeWidth, net);
 +                }
 +            }
 +        }
