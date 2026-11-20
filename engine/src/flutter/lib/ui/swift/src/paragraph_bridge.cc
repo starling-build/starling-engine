@@ -342,7 +342,7 @@ void ParagraphBridge::GetLineBoundary(unsigned offset,
   }
 
   // Same logic as paragraph.cc:getLineBoundary
-  std::vector<txt::LineMetrics> metrics = impl_->paragraph->GetLineMetrics();
+  const std::vector<txt::LineMetrics>& metrics = impl_->paragraph->GetLineMetrics();
   int line_start = -1;
   int line_end = -1;
 
@@ -434,7 +434,7 @@ void ParagraphBridge::ComputeLineMetrics(double* out_data,
     return;
   }
 
-  std::vector<txt::LineMetrics> metrics = impl_->paragraph->GetLineMetrics();
+  const std::vector<txt::LineMetrics>& metrics = impl_->paragraph->GetLineMetrics();
   size_t count = std::min(metrics.size(), max_lines);
   *out_count = count;
 
@@ -466,7 +466,7 @@ size_t ParagraphBridge::ComputeLineAdvances(double* out_data,
   if (!impl_ || !impl_->paragraph || !out_data) {
     return 0;
   }
-  std::vector<txt::LineMetrics> metrics = impl_->paragraph->GetLineMetrics();
+  const std::vector<txt::LineMetrics>& metrics = impl_->paragraph->GetLineMetrics();
   size_t count = std::min(metrics.size(), max_lines);
   for (size_t i = 0; i < count; ++i) {
     out_data[i] = metrics[i].height;
