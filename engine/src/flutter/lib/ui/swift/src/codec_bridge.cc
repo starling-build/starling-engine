@@ -12,6 +12,7 @@
 // Skia headers for image decoding
 #include "third_party/skia/include/codec/SkCodec.h"
 #include "third_party/skia/include/codec/SkCodecAnimation.h"
+#include "third_party/skia/include/codec/SkEncodedImageFormat.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "third_party/skia/include/core/SkData.h"
 #include "third_party/skia/include/core/SkImage.h"
@@ -53,6 +54,9 @@ struct CodecBridgeImpl {
 
   // Path 2: Direct SkCodec (created by factory methods)
   std::unique_ptr<SkCodec> sk_codec;
+  // The encoded bytes the codec reads (Path 2), kept so a plain JPEG can
+  // stay a JPEG: see DecodeNextFrameSkCodec.
+  sk_sp<SkData> encoded;
 
   // Path 3: Raw pixel data
   sk_sp<SkData> raw_data;
@@ -175,6 +179,7 @@ CodecBridge* CodecBridge::CreateFromEncodedData(const void* sk_data_ptr) {
 
   auto* bridge = new CodecBridge();
   bridge->impl_ = new CodecBridgeImpl(std::move(codec));
+  bridge->impl_->encoded = std::move(data);
   return bridge;
 }
 
@@ -321,6 +326,29 @@ static bool DecodeNextFrameGenerator(CodecBridgeImpl* impl) {
 
 // Decode using the SkCodec path (new factory method)
 static bool DecodeNextFrameSkCodec(CodecBridgeImpl* impl) {
+  // A plain JPEG (one frame, opaque, upright, no colour profile) becomes an
+  // image that still holds its encoded bytes, decoded when drawn, so the
+  // PDF backend writes the JPEG itself (a 1920 x 1080 background is 150 KB,
+  // not 1.7 MB of raw pixels, once for every slide that has one).
+  if (impl->encoded && impl->sk_codec->getEncodedFormat() == SkEncodedImageFormat::kJPEG &&
+      impl->sk_codec->getFrameCount() <= 1 &&
+      impl->sk_codec->getOrigin() == kTopLeft_SkEncodedOrigin &&
+      impl->sk_codec->getInfo().isOpaque() &&
+      impl->sk_codec->getInfo().colorSpace() == nullptr) {
+    sk_sp<SkImage> lazy = SkImages::DeferredFromEncodedData(impl->encoded);
+    if (lazy) {
+      sk_sp<DlImage> dl_image = DlImage::Make(std::move(lazy));
+      if (dl_image) {
+        auto* image_bridge = new ImageBridge();
+        auto* heap = new sk_sp<DlImage>(std::move(dl_image));
+        image_bridge->SetDlImageFromPtr(static_cast<void*>(heap));
+        impl->last_frame_image = image_bridge;
+        impl->last_frame_duration_ms = 0;
+        impl->next_frame_index = 0;
+        return true;
+      }
+    }
+  }
   SkImageInfo info = impl->sk_codec->getInfo().makeColorType(kN32_SkColorType);
   if (info.alphaType() == kUnpremul_SkAlphaType) {
     info = info.makeAlphaType(kPremul_SkAlphaType);
