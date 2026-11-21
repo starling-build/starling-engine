@@ -1,0 +1,22 @@
+Skia: ParagraphImpl::extendedVisit takes the address of a zero-length run's glyph bounds and cluster storage with operator[], which traps on an empty array (a line with no glyphs, such as a trailing break); use data() plus the offset instead. The outline walk (ParagraphBridge::GetGlyphPath) crashed a deck whose title ended in a line break.
+
+--- a/flutter/third_party/skia/modules/skparagraph/src/ParagraphImpl.cpp
++++ b/flutter/third_party/skia/modules/skparagraph/src/ParagraphImpl.cpp
+@@ -1428,7 +1428,7 @@
+                           clusterStorage[i] =
+                               run->fClusterStart + run->fClusterIndexes[i];
+                         }
+-                        clusterPtr = &clusterStorage[0];
++                        clusterPtr = clusterStorage.data();
+                     }
+                     const Paragraph::ExtendedVisitorInfo info = {
+                         run->font(),
+@@ -1437,7 +1437,7 @@
+                         SkToS16(context.size),
+                         &run->glyphs()[context.pos],
+                         &run->fPositions[context.pos],
+-                        &glyphBounds[context.pos],
++                        glyphBounds.data() + context.pos,
+                         clusterPtr,
+                         0,  // flags
+                     };
