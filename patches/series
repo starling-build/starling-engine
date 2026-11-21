@@ -30,3 +30,4 @@ skia-justify-every-space.patch
 skia-pdf-cluster-text-once.patch
 skia-no-break-inside-grapheme.patch
 skia-extendedvisit-empty-run.patch
+skia-extendedvisit-justify.patch

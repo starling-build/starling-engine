@@ -1,0 +1,31 @@
+Skia: ParagraphImpl::extendedVisit gave the glyphs' unjustified positions, so the outlines of a stretched line (ParagraphBridge::GetGlyphPath, the text shadow drawn as paths) sat where the line would be without its justification and showed as ghost words beside the real ones; add the run's justification shifts, as paint does.
+
+--- a/flutter/third_party/skia/modules/skparagraph/src/ParagraphImpl.cpp
++++ b/flutter/third_party/skia/modules/skparagraph/src/ParagraphImpl.cpp
+@@ -1430,13 +1430,25 @@
+                         }
+                         clusterPtr = clusterStorage.data();
+                     }
++                    // Starling: a stretched (justified) line's glyphs sit at their
++                    // positions plus the run's justification shifts, as paint draws them.
++                    STArray<64, SkPoint> shifted;
++                    SkPoint* positions = &run->fPositions[context.pos];
++                    if (!run->fJustificationShifts.empty() && context.size > 0) {
++                        shifted.reset(context.size);
++                        for (size_t i = 0; i < context.size; ++i) {
++                            shifted[i] = run->fPositions[context.pos + i];
++                            shifted[i].fX += run->fJustificationShifts[context.pos + i].fX;
++                        }
++                        positions = shifted.data();
++                    }
+                     const Paragraph::ExtendedVisitorInfo info = {
+                         run->font(),
+                         offset,
+                         SkSize::Make(rect.width(), rect.height()),
+                         SkToS16(context.size),
+                         &run->glyphs()[context.pos],
+-                        &run->fPositions[context.pos],
++                        positions,
+                         glyphBounds.data() + context.pos,
+                         clusterPtr,
+                         0,  // flags
