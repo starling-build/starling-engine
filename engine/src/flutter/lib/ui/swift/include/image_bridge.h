@@ -120,6 +120,12 @@ class FLUTTER_SWIFT_BRIDGE_EXPORT
   /// Frees byte data allocated by ToByteData.
   static void FreeByteData(const void* data);
 
+  /// A copy of this image held as JPEG bytes (decoded when drawn), so a PDF export writes a
+  /// JPEG, as it does for a plain JPEG source. For a resampled or recoloured opaque photo.
+  /// Returns nullptr when the image has any transparency or cannot be read back.
+  /// The caller owns the returned reference.
+  ImageBridge* JpegCopy(int quality) const;
+
   /// Returns an opaque pointer to the underlying sk_sp<const DlImage>.
   ///
   /// This is used by other bridge classes (e.g., ImageShaderBridge) that need

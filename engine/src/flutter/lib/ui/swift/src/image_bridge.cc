@@ -12,7 +12,9 @@
 #include "third_party/skia/include/core/SkImage.h"
 #include "third_party/skia/include/core/SkPixmap.h"
 #include "third_party/skia/include/core/SkSurface.h"
+#include "third_party/skia/include/encode/SkJpegEncoder.h"
 #include "third_party/skia/include/encode/SkPngEncoder.h"
+#include "third_party/skia/include/core/SkStream.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -249,6 +251,55 @@ bool ImageBridge::ToByteData(int format,
   *out_data = copy;
   *out_length = static_cast<int64_t>(size);
   return true;
+}
+
+ImageBridge* ImageBridge::JpegCopy(int quality) const {
+  if (!impl_->image || quality < 1 || quality > 100) {
+    return nullptr;
+  }
+  sk_sp<SkImage> skia_image = impl_->image->skia_image();
+  if (!skia_image) {
+    return nullptr;
+  }
+  sk_sp<SkImage> raster = skia_image->peekPixels(nullptr) ? skia_image : skia_image->makeRasterImage();
+  if (!raster) {
+    return nullptr;
+  }
+  SkPixmap pixmap;
+  if (!raster->peekPixels(&pixmap)) {
+    return nullptr;
+  }
+  // Only a picture with no transparency at all: every pixel's alpha is 255.
+  if (pixmap.colorType() != kRGBA_8888_SkColorType && pixmap.colorType() != kBGRA_8888_SkColorType) {
+    return nullptr;
+  }
+  for (int y = 0; y < pixmap.height(); y++) {
+    const uint8_t* row = static_cast<const uint8_t*>(pixmap.addr(0, y));
+    for (int x = 0; x < pixmap.width(); x++) {
+      if (row[x * 4 + 3] != 0xFF) {
+        return nullptr;
+      }
+    }
+  }
+  SkJpegEncoder::Options options;
+  options.fQuality = quality;
+  options.fAlphaOption = SkJpegEncoder::AlphaOption::kIgnore;
+  SkDynamicMemoryWStream stream;
+  if (!SkJpegEncoder::Encode(&stream, pixmap, options)) {
+    return nullptr;
+  }
+  sk_sp<SkData> encoded = stream.detachAsData();
+  sk_sp<SkImage> lazy = encoded ? SkImages::DeferredFromEncodedData(encoded) : nullptr;
+  if (!lazy) {
+    return nullptr;
+  }
+  sk_sp<DlImage> dl_image = DlImage::Make(std::move(lazy));
+  if (!dl_image) {
+    return nullptr;
+  }
+  auto* out = new ImageBridge();
+  out->SetDlImageFromPtr(new sk_sp<DlImage>(std::move(dl_image)));
+  return out;
 }
 
 void ImageBridge::FreeByteData(const void* data) {
