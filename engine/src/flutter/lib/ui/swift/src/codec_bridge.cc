@@ -326,7 +326,8 @@ static bool DecodeNextFrameGenerator(CodecBridgeImpl* impl) {
 
 // Decode using the SkCodec path (new factory method)
 static bool DecodeNextFrameSkCodec(CodecBridgeImpl* impl) {
-  // A plain JPEG (one frame, opaque, upright, no colour profile) becomes an
+  // A plain JPEG (one frame, opaque, upright, sRGB or no colour profile; Skia reports sRGB
+  // for a JPEG without one) becomes an
   // image that still holds its encoded bytes, decoded when drawn, so the
   // PDF backend writes the JPEG itself (a 1920 x 1080 background is 150 KB,
   // not 1.7 MB of raw pixels, once for every slide that has one).
@@ -334,7 +335,8 @@ static bool DecodeNextFrameSkCodec(CodecBridgeImpl* impl) {
       impl->sk_codec->getFrameCount() <= 1 &&
       impl->sk_codec->getOrigin() == kTopLeft_SkEncodedOrigin &&
       impl->sk_codec->getInfo().isOpaque() &&
-      impl->sk_codec->getInfo().colorSpace() == nullptr) {
+      (impl->sk_codec->getInfo().colorSpace() == nullptr ||
+       impl->sk_codec->getInfo().colorSpace()->isSRGB())) {
     sk_sp<SkImage> lazy = SkImages::DeferredFromEncodedData(impl->encoded);
     if (lazy) {
       sk_sp<DlImage> dl_image = DlImage::Make(std::move(lazy));
