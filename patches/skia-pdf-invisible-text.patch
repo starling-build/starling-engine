@@ -16,13 +16,15 @@ Skia PDF: text painted black at alpha 1/255 is written as invisible text (render
      SkTCopyOnFirstWrite<SkPaint> paint(clean_paint(fillPaint));
      ScopedContentEntry content(this, *paint, glyphRunFont.getScaleX());
      if (!content) {
-@@ -1047,6 +1054,9 @@
+@@ -1047,6 +1054,11 @@
      if (fTextStroke > 0) {
          out->writeText("2 Tr\n");
      }
 +    if (invisibleText) {
 +        out->writeText("3 Tr\n");
 +    }
++    // (The render mode is graphics state, not text-object state: reset it before ET so later text stays visible.)
++    SK_AT_SCOPE_EXIT(if (invisibleText) { out->writeText("0 Tr\n"); });
      SK_AT_SCOPE_EXIT(out->writeText(fTextStroke > 0 ? "ET\nQ\n" : "ET\n"));
  
      const int numGlyphs = typeface.countGlyphs();
