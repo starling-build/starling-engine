@@ -32,3 +32,4 @@ skia-no-break-inside-grapheme.patch
 skia-extendedvisit-empty-run.patch
 skia-extendedvisit-justify.patch
 skia-pdf-invisible-text.patch
+skia-fake-italic-third.patch

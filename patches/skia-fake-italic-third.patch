@@ -1,0 +1,13 @@
+Skia paragraph: a synthetic italic (a face with no italic of its own, asked for italic) is skewed by 1/3, not Skia's 1/4. Windows Office draws it so: every Tm of 742 PowerPoint prints and 114 Word prints holding a synthetic slant is [1 0 0.3333 1] (Yu Gothic i=1, ja 998cb8cc p5), where ours was [1 0 0.25 -1].
+
+--- a/flutter/third_party/skia/modules/skparagraph/src/OneLineShaper.cpp
++++ b/flutter/third_party/skia/modules/skparagraph/src/OneLineShaper.cpp
+@@ -676,7 +676,7 @@ bool OneLineShaper::shape() {
+                       block.fStyle.getFontStyle().slant() == SkFontStyle::kItalic_Slant &&
+                       font.getTypeface()->fontStyle().slant() != SkFontStyle::kItalic_Slant;
+                   font.setEmbolden(fakeBold);
+-                  font.setSkewX(fakeItalic ? -SK_Scalar1 / 4 : 0);
++                  font.setSkewX(fakeItalic ? -SK_Scalar1 / 3 : 0);
+                 }
+ 
+                 // Walk through all the currently unresolved blocks
