@@ -1,0 +1,28 @@
+Skia PDF: text painted black at alpha 1/255 is written as invisible text (render mode 3) under an opaque paint, so a letter drawn as an outline keeps its searchable text without a transparency group per glyph (pptx WordArt warps1-5).
+
+--- a/flutter/third_party/skia/src/pdf/SkPDFDevice.cpp
++++ b/flutter/third_party/skia/src/pdf/SkPDFDevice.cpp
+@@ -1021,6 +1021,13 @@
+     }
+     fillPaint.setPathEffect(nullptr);
+     fillPaint.setMaskFilter(nullptr);
++    // Text painted black at alpha 1/255 is the app's request for INVISIBLE text (a letter drawn as an
++    // outline that must still be searchable): write it with text render mode 3 under an opaque paint,
++    // not a near-clear constant alpha, which would be a transparency group in the print.
++    const bool invisibleText = fTextStroke == 0 && !fillPaint.getShader() && fillPaint.getColor() == 0x01000000;
++    if (invisibleText) {
++        fillPaint.setColor(SK_ColorBLACK);
++    }
+     SkTCopyOnFirstWrite<SkPaint> paint(clean_paint(fillPaint));
+     ScopedContentEntry content(this, *paint, glyphRunFont.getScaleX());
+     if (!content) {
+@@ -1047,6 +1054,9 @@
+     if (fTextStroke > 0) {
+         out->writeText("2 Tr\n");
+     }
++    if (invisibleText) {
++        out->writeText("3 Tr\n");
++    }
+     SK_AT_SCOPE_EXIT(out->writeText(fTextStroke > 0 ? "ET\nQ\n" : "ET\n"));
+ 
+     const int numGlyphs = typeface.countGlyphs();
