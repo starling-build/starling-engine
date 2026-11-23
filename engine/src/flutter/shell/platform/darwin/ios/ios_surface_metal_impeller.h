@@ -26,6 +26,12 @@ class SK_API_AVAILABLE_CA_METAL_LAYER IOSSurfaceMetalImpeller final
   // |IOSSurface|
   ~IOSSurfaceMetalImpeller();
 
+  // STARLING: the drawable of a Flutter view other than the implicit one. The
+  // rasterizer's one surface draws a view into the layer registered for its id
+  // (CurrentRasterViewId), or the surface's own layer when there is none.
+  static void RegisterLayerForView(int64_t view_id, CAMetalLayer* layer);
+  static void UnregisterLayerForView(int64_t view_id);
+
  private:
   CAMetalLayer* layer_;
   const std::shared_ptr<impeller::Context> impeller_context_;

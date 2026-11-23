@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include "flutter/shell/common/rasterizer.h"
+#include "flutter/shell/common/raster_view_id.h"
 
 #include <algorithm>
 #include <memory>
@@ -707,6 +708,9 @@ DrawSurfaceStatus Rasterizer::DrawToSurfaceUnsafe(
     float device_pixel_ratio,
     std::optional<fml::TimePoint> presentation_time) {
   FML_DCHECK(surface_);
+
+  // STARLING: the surface picks this view's drawable from it.
+  CurrentRasterViewId() = view_id;
 
   DlCanvas* embedder_root_canvas = nullptr;
   if (external_view_embedder_) {

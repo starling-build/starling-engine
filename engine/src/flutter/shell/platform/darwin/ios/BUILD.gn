@@ -89,6 +89,8 @@ source_set("flutter_framework_source") {
     "framework/Source/FlutterEmbedderKeyResponder.h",
     "framework/Source/FlutterEmbedderKeyResponder.mm",
     "framework/Source/FlutterEngine.mm",
+    "framework/Source/FlutterEngine+StarlingViews.h",
+    "framework/Source/FlutterEngine+StarlingViews.mm",
     "framework/Source/FlutterEngineGroup.mm",
     "framework/Source/FlutterEngine_Internal.h",
     "framework/Source/FlutterHeadlessDartRunner.mm",

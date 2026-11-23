@@ -4,6 +4,11 @@
 
 #import "flutter/shell/platform/darwin/ios/ios_surface_metal_impeller.h"
 
+#include <map>
+#include <mutex>
+
+#include "flutter/shell/common/raster_view_id.h"
+
 #include "flutter/impeller/renderer/backend/metal/formats_mtl.h"
 #include "flutter/impeller/renderer/context.h"
 #include "flutter/shell/gpu/gpu_surface_metal_impeller.h"
@@ -14,6 +19,27 @@
 FLUTTER_ASSERT_ARC
 
 namespace flutter {
+
+namespace {
+std::mutex& ViewLayersMutex() {
+  static std::mutex m;
+  return m;
+}
+std::map<int64_t, CAMetalLayer*>& ViewLayers() {
+  static std::map<int64_t, CAMetalLayer*> layers;
+  return layers;
+}
+}  // namespace
+
+void IOSSurfaceMetalImpeller::RegisterLayerForView(int64_t view_id, CAMetalLayer* layer) {
+  std::lock_guard<std::mutex> guard(ViewLayersMutex());
+  ViewLayers()[view_id] = layer;
+}
+
+void IOSSurfaceMetalImpeller::UnregisterLayerForView(int64_t view_id) {
+  std::lock_guard<std::mutex> guard(ViewLayersMutex());
+  ViewLayers().erase(view_id);
+}
 
 IOSSurfaceMetalImpeller::IOSSurfaceMetalImpeller(CAMetalLayer* layer,
                                                  const std::shared_ptr<IOSContext>& context)
@@ -52,16 +78,25 @@ std::unique_ptr<Surface> IOSSurfaceMetalImpeller::CreateGPUSurface() {
 
 // |GPUSurfaceMetalDelegate|
 GPUCAMetalLayerHandle IOSSurfaceMetalImpeller::GetCAMetalLayer(const DlISize& frame_info) const {
+  CAMetalLayer* layer = layer_;
+  if (CurrentRasterViewId() != 0) {  // STARLING: a view of its own, not the implicit one
+    std::lock_guard<std::mutex> guard(ViewLayersMutex());
+    auto it = ViewLayers().find(CurrentRasterViewId());
+    if (it == ViewLayers().end()) {
+      return nullptr;  // an unregistered view draws nowhere, rather than over the first one
+    }
+    layer = it->second;
+  }
   const auto drawable_size = CGSizeMake(frame_info.width, frame_info.height);
-  if (!CGSizeEqualToSize(drawable_size, layer_.drawableSize)) {
-    layer_.drawableSize = drawable_size;
+  if (!CGSizeEqualToSize(drawable_size, layer.drawableSize)) {
+    layer.drawableSize = drawable_size;
   }
 
   // Flutter needs to read from the color attachment in cases where there are effects such as
   // backdrop filters. Flutter plugins that create platform views may also read from the layer.
-  layer_.framebufferOnly = NO;
+  layer.framebufferOnly = NO;
 
-  return (__bridge GPUCAMetalLayerHandle)layer_;
+  return (__bridge GPUCAMetalLayerHandle)layer;
 }
 
 // |GPUSurfaceMetalDelegate|
