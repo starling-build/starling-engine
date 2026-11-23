@@ -21,8 +21,8 @@
 +                SkScalar net = cluster->width();
 +                for (auto g = cluster; !g->isGraphemeBreak() && g + 1 < endOfClusters && !(g + 1)->run().isPlaceholder(); ) {
 +                    ++g;
-+                    net += g->width();  // weigh by the widest running prefix: a negative-width mark must not pull an overflowing base under the limit
-+                    graphemeWidth = std::max(graphemeWidth, net);
++                    net += g->width();  // the grapheme's own width, marks included: Word fits a line by the advances it sets, a mark's (negative here, by the stand-in's spacing) taken off its base's
++                    graphemeWidth = net;
 +                }
 +            }
 +        }
