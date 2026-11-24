@@ -27,6 +27,13 @@ NS_ASSUME_NONNULL_BEGIN
 /// A new size, in points, for view `viewId`.
 - (void)starlingResizeViewWithId:(int64_t)viewId size:(CGSize)size pixelRatio:(double)pixelRatio;
 
+/// The same, with `insetBottom` points of the view's bottom covered (the docked keyboard's share of it): the
+/// view's `viewInsets.bottom`, as the view controller sets it for view 0.
+- (void)starlingResizeViewWithId:(int64_t)viewId
+                            size:(CGSize)size
+                      pixelRatio:(double)pixelRatio
+                     insetBottom:(double)insetBottom;
+
 /// UIKit touches that landed on the UIView of view `viewId`, sent to it as pointer events (the view
 /// controller does this for view 0). `view` is the UIView the touches' locations are taken in. The
 /// device of a touch is the UITouch itself, so two windows touched at once cannot collide.

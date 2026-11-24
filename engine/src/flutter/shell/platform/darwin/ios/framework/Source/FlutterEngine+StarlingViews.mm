@@ -15,7 +15,7 @@ FLUTTER_ASSERT_ARC
 - (flutter::PlatformViewIOS*)platformView;
 @end
 
-static flutter::ViewportMetrics MetricsFor(CGSize size, double pixelRatio) {
+static flutter::ViewportMetrics MetricsFor(CGSize size, double pixelRatio, double insetBottom = 0) {
   flutter::ViewportMetrics m;
   m.device_pixel_ratio = pixelRatio;
   m.physical_width = size.width * pixelRatio;
@@ -24,6 +24,7 @@ static flutter::ViewportMetrics MetricsFor(CGSize size, double pixelRatio) {
   m.physical_max_width_constraint = m.physical_width;
   m.physical_min_height_constraint = m.physical_height;
   m.physical_max_height_constraint = m.physical_height;
+  m.physical_view_inset_bottom = insetBottom * pixelRatio;
   return m;
 }
 
@@ -50,9 +51,16 @@ static flutter::ViewportMetrics MetricsFor(CGSize size, double pixelRatio) {
 }
 
 - (void)starlingResizeViewWithId:(int64_t)viewId size:(CGSize)size pixelRatio:(double)pixelRatio {
+  [self starlingResizeViewWithId:viewId size:size pixelRatio:pixelRatio insetBottom:0];
+}
+
+- (void)starlingResizeViewWithId:(int64_t)viewId
+                            size:(CGSize)size
+                      pixelRatio:(double)pixelRatio
+                     insetBottom:(double)insetBottom {
   flutter::PlatformViewIOS* platformView = [self platformView];
   if (platformView && viewId != flutter::kFlutterImplicitViewId) {
-    platformView->SetViewportMetrics(viewId, MetricsFor(size, pixelRatio));
+    platformView->SetViewportMetrics(viewId, MetricsFor(size, pixelRatio, insetBottom));
   }
 }
 
