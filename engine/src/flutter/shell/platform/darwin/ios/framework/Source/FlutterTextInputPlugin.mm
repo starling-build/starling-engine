@@ -3004,6 +3004,9 @@ static BOOL IsSelectionRectBoundaryCloserToPoint(CGPoint point,
 
 // The UIView to add FlutterTextInputViews to.
 - (UIView*)hostView {
+  if (self.starlingHostView.window != nil) {
+    return self.starlingHostView;
+  }
   UIView* host = _viewController.view;
   NSAssert(host != nullptr,
            @"The application must have a host view since the keyboard client "

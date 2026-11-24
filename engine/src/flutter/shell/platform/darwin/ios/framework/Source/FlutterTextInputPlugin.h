@@ -34,6 +34,9 @@ typedef NS_ENUM(NSInteger, FlutterScribbleInteractionStatus) {
     : NSObject <FlutterKeySecondaryResponder, UIIndirectScribbleInteractionDelegate>
 
 @property(nonatomic, weak) UIViewController* viewController;
+/// STARLING: where the text-input view goes when it is not the view controller's view: the window of the scene
+/// whose view has the keys (one engine, several scenes, one first responder at a time). nil: the view controller's.
+@property(nonatomic, weak) UIView* starlingHostView;
 @property(nonatomic, weak) id<FlutterIndirectScribbleDelegate> indirectScribbleDelegate;
 @property(nonatomic, strong)
     NSMutableDictionary<UIScribbleElementIdentifier, NSValue*>* scribbleElements;

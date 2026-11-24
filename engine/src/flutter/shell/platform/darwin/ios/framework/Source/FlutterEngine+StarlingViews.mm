@@ -111,6 +111,10 @@ static flutter::ViewportMetrics MetricsFor(CGSize size, double pixelRatio, doubl
   [self dispatchPointerDataPacket:std::move(packet)];
 }
 
+- (void)starlingSetTextInputHostView:(UIView*)view {
+  self.textInputPlugin.starlingHostView = view;
+}
+
 - (void)starlingRemoveViewWithId:(int64_t)viewId done:(void (^)(BOOL))done {
   flutter::PlatformViewIOS* platformView = [self platformView];
   if (!platformView || viewId == flutter::kFlutterImplicitViewId) {

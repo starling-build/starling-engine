@@ -41,6 +41,11 @@ NS_ASSUME_NONNULL_BEGIN
                          inView:(UIView*)view
                          viewId:(int64_t)viewId;
 
+/// Where the text-input view (the first responder that brings up the keyboard) goes: a view in the window of the
+/// scene that has the keys. nil puts it back in the view controller's view. The next time text input is shown
+/// it is parented there.
+- (void)starlingSetTextInputHostView:(UIView* _Nullable)view;
+
 /// Removes view `viewId` and forgets its layer; `done` once the shell has finished with it.
 - (void)starlingRemoveViewWithId:(int64_t)viewId done:(void (^_Nullable)(BOOL removed))done;
 
