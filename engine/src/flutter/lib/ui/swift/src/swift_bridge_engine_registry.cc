@@ -21,6 +21,8 @@ SwiftBridgeEngineRegistry::ScheduleFrameCallback
     SwiftBridgeEngineRegistry::schedule_frame_callback_;
 SwiftBridgeEngineRegistry::SnapshotCallback
     SwiftBridgeEngineRegistry::snapshot_callback_;
+SwiftBridgeEngineRegistry::ImageUploadCallback
+    SwiftBridgeEngineRegistry::image_upload_callback_;
 float SwiftBridgeEngineRegistry::device_pixel_ratio_ = 1.0f;
 bool SwiftBridgeEngineRegistry::frame_rendered_ = false;
 bool SwiftBridgeEngineRegistry::impeller_enabled_ = false;
@@ -92,6 +94,16 @@ bool SwiftBridgeEngineRegistry::GetImpellerEnabled() {
   return impeller_enabled_;
 }
 
+void SwiftBridgeEngineRegistry::SetImageUploadCallback(
+    ImageUploadCallback callback) {
+  image_upload_callback_ = std::move(callback);
+}
+
+const SwiftBridgeEngineRegistry::ImageUploadCallback&
+SwiftBridgeEngineRegistry::GetImageUploadCallback() {
+  return image_upload_callback_;
+}
+
 void SwiftBridgeEngineRegistry::SetSnapshotCallback(SnapshotCallback callback) {
   snapshot_callback_ = std::move(callback);
 }
@@ -105,6 +117,7 @@ void SwiftBridgeEngineRegistry::Reset() {
   render_callback_ = nullptr;
   schedule_frame_callback_ = nullptr;
   snapshot_callback_ = nullptr;
+  image_upload_callback_ = nullptr;
   device_pixel_ratio_ = 1.0f;
   frame_rendered_ = false;
   impeller_enabled_ = false;

@@ -33,6 +33,13 @@
 #include "flutter/shell/common/base64.h"
 #include "flutter/lib/ui/painting/display_list_deferred_image_gpu_impeller.h"
 #include "flutter/lib/ui/swift/include/swift_bridge_engine_registry.h"
+#if IMPELLER_SUPPORTS_RENDERING
+#include "flutter/display_list/image/dl_image.h"
+#include "flutter/lib/ui/painting/image_decoder_impeller.h"
+#include "impeller/core/texture.h"
+#include "third_party/skia/include/core/SkBitmap.h"
+#include "third_party/skia/include/core/SkImage.h"
+#endif  // IMPELLER_SUPPORTS_RENDERING
 #include "flutter/shell/common/engine.h"
 #include "flutter/shell/common/skia_event_tracer_impl.h"
 #include "flutter/shell/common/switches.h"
@@ -60,6 +67,43 @@ constexpr char kTypeKey[] = "type";
 constexpr char kFontChange[] = "fontsChange";
 
 namespace {
+
+#if IMPELLER_SUPPORTS_RENDERING
+// A decoded picture the Swift bridge made, drawable by Impeller AND by Skia.
+// Impeller draws a DlImage through its texture; Skia (the PDF backend that
+// prints and exports, whatever draws the screen) draws it through its
+// SkImage. A DlImageSkia has only the second, an Impeller image only the
+// first; this one keeps both, the SkImage staying lazy where it was (a JPEG
+// still holds its encoded bytes, so a PDF embeds the file itself).
+class DlImageSkiaAndTexture final : public DlImage {
+ public:
+  DlImageSkiaAndTexture(sk_sp<SkImage> image,
+                        std::shared_ptr<impeller::Texture> texture)
+      : image_(std::move(image)), texture_(std::move(texture)) {}
+  ~DlImageSkiaAndTexture() override = default;
+
+  sk_sp<SkImage> skia_image() const override { return image_; }
+  std::shared_ptr<impeller::Texture> impeller_texture() const override {
+    return texture_;
+  }
+  bool isOpaque() const override { return image_ && image_->isOpaque(); }
+  bool isTextureBacked() const override { return true; }
+  bool isUIThreadSafe() const override { return true; }
+  DlISize GetSize() const override {
+    return image_ ? DlISize(image_->width(), image_->height()) : DlISize();
+  }
+  size_t GetApproximateByteSize() const override {
+    return sizeof(*this) +
+           (image_ ? image_->imageInfo().computeMinByteSize() : 0);
+  }
+
+ private:
+  sk_sp<SkImage> image_;
+  std::shared_ptr<impeller::Texture> texture_;
+
+  FML_DISALLOW_COPY_AND_ASSIGN(DlImageSkiaAndTexture);
+};
+#endif  // IMPELLER_SUPPORTS_RENDERING
 
 #ifndef FLUTTER_NO_DART_VM
 std::unique_ptr<Engine> CreateEngine(
@@ -837,6 +881,7 @@ std::unique_ptr<Shell> Shell::CreateShellOnPlatformThreadSwift(
            vsync_waiter = std::move(vsync_waiter),                 //
            &weak_io_manager_future,                                //
            &snapshot_delegate_future,                              //
+           impeller_context_future,                                //
            runtime_controller = std::move(runtime_controller)      //
       ]() mutable {
             TRACE_EVENT0("flutter", "ShellSetupUISubsystem");
@@ -946,6 +991,51 @@ std::unique_ptr<Shell> Shell::CreateShellOnPlatformThreadSwift(
                     return nullptr;
                   });
             }
+
+#if IMPELLER_SUPPORTS_RENDERING
+            // Pictures the Swift codec decodes: under Impeller a plain raster
+            // DlImage has no texture, and the dispatcher draws nothing for
+            // it. Upload the pixels and keep the SkImage beside the texture
+            // (see DlImageSkiaAndTexture). Null (no context, unsupported
+            // format) leaves the bridge on its plain image.
+            if (shell->GetSettings().enable_impeller) {
+              swift_bridge::SwiftBridgeEngineRegistry::SetImageUploadCallback(
+                  [impeller_context_future](const void* sk_image_ptr) -> void* {
+                    if (!sk_image_ptr) {
+                      return nullptr;
+                    }
+                    const auto& image =
+                        *static_cast<const sk_sp<SkImage>*>(sk_image_ptr);
+                    if (!image) {
+                      return nullptr;
+                    }
+                    auto context = impeller_context_future
+                                       ? impeller_context_future->GetContext()
+                                       : nullptr;
+                    if (!context) {
+                      return nullptr;
+                    }
+                    // Pixels in a format Impeller takes (N32 premultiplied),
+                    // decoded now if the image was only holding its bytes.
+                    auto bitmap = std::make_shared<SkBitmap>();
+                    if (!bitmap->tryAllocPixels(SkImageInfo::MakeN32Premul(
+                            image->width(), image->height())) ||
+                        !image->readPixels(nullptr, bitmap->pixmap(), 0, 0)) {
+                      return nullptr;
+                    }
+                    auto uploaded =
+                        ImageDecoderImpeller::UploadTextureToStorage(context,
+                                                                     bitmap);
+                    if (!uploaded.first) {
+                      FML_LOG(ERROR) << "Picture upload failed: "
+                                     << uploaded.second;
+                      return nullptr;
+                    }
+                    return new sk_sp<DlImage>(sk_make_sp<DlImageSkiaAndTexture>(
+                        image, uploaded.first->impeller_texture()));
+                  });
+            }
+#endif  // IMPELLER_SUPPORTS_RENDERING
 
             // Wire up SwiftBridgeEngineRegistry callbacks so that Swift bridge
             // functions (RenderView, ScheduleFrame) can reach the engine.

@@ -182,6 +182,31 @@ class FLUTTER_SWIFT_BRIDGE_EXPORT SwiftBridgeEngineRegistry {
   /// Returns the registered snapshot callback, or an empty function.
   static const SnapshotCallback& GetSnapshotCallback();
 
+  /// Makes an image the rasteriser can DRAW from a decoded one.
+  ///
+  /// The Swift codec bridge produces raster-backed DlImages (an SkImage in a
+  /// DlImageSkia). Skia hosts draw those as they are. Impeller cannot: a
+  /// DlImageSkia answers `impeller_texture()` with null, and the Impeller
+  /// dispatcher then draws nothing — no error, no log — so every picture an
+  /// iPad app decoded was a blank rectangle. The shell, which has the Impeller
+  /// context, binds this to upload the pixels into a texture and hand back an
+  /// image that carries BOTH (the SkImage stays for the PDF backend, which
+  /// draws through Skia whatever the screen uses).
+  ///
+  /// Opaque in both directions, like the snapshot callback:
+  ///   in  — `const sk_sp<SkImage>*` (raster, or deferred from encoded bytes)
+  ///   out — a NEW `sk_sp<flutter::DlImage>*`, ownership passing to the
+  ///         caller, or nullptr if it could not be made (the caller then
+  ///         keeps its plain raster image).
+  using ImageUploadCallback = std::function<void*(const void* sk_image)>;
+
+  /// Sets the upload callback. Unset (Skia hosts, and embedders that never
+  /// wire it) the bridge keeps making plain raster images.
+  static void SetImageUploadCallback(ImageUploadCallback callback);
+
+  /// Returns the registered upload callback, or an empty function.
+  static const ImageUploadCallback& GetImageUploadCallback();
+
   /// Clears all registered callbacks and resets device pixel ratio.
   ///
   /// Should be called during engine teardown.
@@ -194,6 +219,7 @@ class FLUTTER_SWIFT_BRIDGE_EXPORT SwiftBridgeEngineRegistry {
   static RenderCallback render_callback_;
   static ScheduleFrameCallback schedule_frame_callback_;
   static SnapshotCallback snapshot_callback_;
+  static ImageUploadCallback image_upload_callback_;
   static float device_pixel_ratio_;
   static bool frame_rendered_;
   static bool impeller_enabled_;

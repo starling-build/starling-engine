@@ -4,6 +4,7 @@
 
 #include "include/codec_bridge.h"
 #include "include/image_bridge.h"
+#include "include/swift_bridge_engine_registry.h"
 
 // Flutter engine headers (only in .cc file)
 #include "flutter/display_list/image/dl_image.h"
@@ -225,6 +226,28 @@ int CodecBridge::GetRepetitionCount() const {
   return impl_->repetition_count;
 }
 
+// A DlImage for a decoded SkImage. Under Impeller the plain raster DlImage
+// draws nothing (its impeller_texture() is null), so the shell is asked for
+// one that carries a texture too; Skia hosts, and a shell that declines, get
+// the plain raster image as ever.
+static sk_sp<DlImage> MakeDlImage(sk_sp<SkImage> sk_image) {
+  if (SwiftBridgeEngineRegistry::GetImpellerEnabled()) {
+    const auto& upload = SwiftBridgeEngineRegistry::GetImageUploadCallback();
+    if (upload) {
+      void* made = upload(static_cast<const void*>(&sk_image));
+      if (made) {
+        auto* heap = static_cast<sk_sp<DlImage>*>(made);
+        sk_sp<DlImage> out = std::move(*heap);
+        delete heap;
+        if (out) {
+          return out;
+        }
+      }
+    }
+  }
+  return DlImage::Make(std::move(sk_image));
+}
+
 // Helper to create an ImageBridge from an SkBitmap
 static ImageBridge* CreateImageBridgeFromBitmap(SkBitmap& bitmap) {
   bitmap.setImmutable();
@@ -233,7 +256,7 @@ static ImageBridge* CreateImageBridgeFromBitmap(SkBitmap& bitmap) {
     return nullptr;
   }
 
-  sk_sp<DlImage> dl_image = DlImage::Make(std::move(sk_image));
+  sk_sp<DlImage> dl_image = MakeDlImage(std::move(sk_image));
   if (!dl_image) {
     return nullptr;
   }
@@ -339,7 +362,7 @@ static bool DecodeNextFrameSkCodec(CodecBridgeImpl* impl) {
        impl->sk_codec->getInfo().colorSpace()->isSRGB())) {
     sk_sp<SkImage> lazy = SkImages::DeferredFromEncodedData(impl->encoded);
     if (lazy) {
-      sk_sp<DlImage> dl_image = DlImage::Make(std::move(lazy));
+      sk_sp<DlImage> dl_image = MakeDlImage(std::move(lazy));
       if (dl_image) {
         auto* image_bridge = new ImageBridge();
         auto* heap = new sk_sp<DlImage>(std::move(dl_image));
