@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include "export.h"
+#include "flutter/lib/ui/swift/src/font_ink_shift.h"
 #include "live_objects.h"
 #include "third_party/skia/include/core/SkFontMgr.h"
 #include "third_party/skia/include/ports/SkFontMgr_empty.h"
@@ -10,6 +11,7 @@
 #include "third_party/skia/modules/skparagraph/include/TypefaceFontProvider.h"
 #include "wrappers.h"
 
+#include <cstdlib>
 #include <memory>
 
 using namespace skia::textlayout;
@@ -111,8 +113,15 @@ SKWASM_EXPORT void fontCollection_registerTypeface(
     SkString* fontName) {
   if (fontName) {
     SkString alias = *fontName;
-    collection->provider->registerTypeface(sk_ref_sp<SkTypeface>(typeface),
-                                           alias);
+    sk_sp<SkTypeface> face = sk_ref_sp<SkTypeface>(typeface);
+    // Starling: a family named "Ink+<em> <name>" registers the face drawn
+    // <em> of its em lower than its outlines stand, as the native bridge's
+    // LoadFontFromFileFace does (font_ink_shift.h).
+    if (alias.startsWith("Ink+")) {
+      const double shift = std::atof(alias.c_str() + 4);
+      if (shift != 0) face = sk_sp<SkTypeface>(new StarlingInkShiftTypeface(face, shift));
+    }
+    collection->provider->registerTypeface(std::move(face), alias);
   } else {
     collection->provider->registerTypeface(sk_ref_sp<SkTypeface>(typeface));
   }
