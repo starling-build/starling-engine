@@ -88,10 +88,13 @@ class PdfDispatcher : public DlSkCanvasDispatcher {
     if (found != copies_.end()) {
       return found->second;
     }
-    // A picture-backed image rasterises without a GPU; a texture does not.
-    sk_sp<SkImage> copy = sk->makeRasterImage(nullptr);
+    // Through the GPU first: a picture-backed image (Picture.toImageSync)
+    // rasterised on the CPU draws any browser-decoded picture inside it as
+    // nothing, since that is a texture (a tiled photo fill shrunk to 200 per
+    // inch came out black). The CPU raster is left for when there is no GL.
+    sk_sp<SkImage> copy = surface_->rasterCopy(sk.get());
     if (!copy) {
-      copy = surface_->rasterCopy(sk.get());
+      copy = sk->makeRasterImage(nullptr);
     }
     sk_sp<DlImage> result = copy ? DlImage::Make(std::move(copy)) : image;
     copies_[sk->uniqueID()] = result;
