@@ -1,0 +1,35 @@
+Skia paragraph (ICU): justification spreads over every East Asian wide character (CJK punctuation, kana, fullwidth forms), not only UCHAR_IDEOGRAPHIC; Hangul and emoji excluded. Word's prints (zh-875759ff p29 》《, zh-266603368 p4 、A2) and the web build (SkUnicode_hardcoded) already do.
+
+--- a/flutter/third_party/skia/modules/skunicode/src/SkUnicode_icu.cpp
++++ b/flutter/third_party/skia/modules/skunicode/src/SkUnicode_icu.cpp
+@@ -459,6 +459,21 @@
+         return sk_u_hasBinaryProperty(unichar, UCHAR_IDEOGRAPHIC);
+     }
+ 
++    // Starling: a justified East Asian line spreads its slack over every wide character, not only the
++    // Unicode ideographs: CJK punctuation (、。《》「」), kana and fullwidth forms take their share too, as
++    // in Word's prints (zh-875759ff p29: the gap between 》 and 《 is 16.31, ours was 16.0 with the
++    // slack piled elsewhere; a kana-only justified line spread nothing). Hangul stays out: Korean
++    // justifies at its spaces. Emoji stay out too. kIdeographic is read only by justification.
++    static bool isWideSpreadable(SkUnichar c) {
++        if (c < 0x1100) return false;
++        int ea = sk_u_getIntPropertyValue(c, UCHAR_EAST_ASIAN_WIDTH);
++        if (ea != U_EA_WIDE && ea != U_EA_FULLWIDTH) return false;
++        if (sk_u_getIntPropertyValue(c, UCHAR_HANGUL_SYLLABLE_TYPE) != U_HST_NOT_APPLICABLE) return false;
++        if (c >= 0x3130 && c <= 0x318F) return false;  // Hangul compatibility jamo
++        if (sk_u_hasBinaryProperty(c, UCHAR_EMOJI_PRESENTATION)) return false;
++        return true;
++    }
++
+     bool isTabulation(SkUnichar utf8) override {
+         return utf8 == '\t';
+     }
+@@ -618,7 +633,7 @@
+                 if (this->isControl(unichar)) {
+                     results->at(i) |= SkUnicode::kControl;
+                 }
+-                if (this->isIdeographic(unichar)) {
++                if (this->isIdeographic(unichar) || isWideSpreadable(unichar)) {
+                     results->at(i) |= SkUnicode::kIdeographic;
+                 }
+             }

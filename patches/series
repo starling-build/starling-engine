@@ -34,3 +34,4 @@ skia-extendedvisit-justify.patch
 skia-pdf-invisible-text.patch
 skia-fake-italic-third.patch
 skia-pdf-cff-cid.patch
+skia-justify-east-asian-wide.patch
