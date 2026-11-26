@@ -1,0 +1,20 @@
+--- a/flutter/third_party/skia/modules/skparagraph/src/TextWrapper.cpp
++++ b/flutter/third_party/skia/modules/skparagraph/src/TextWrapper.cpp
+@@ -94,6 +94,17 @@
+                 fWords.extend(fClusters);
+                 continue;
+             } else if (cluster->run().isPlaceholder()) {
++                if (cluster->width() <= 0 && fClusters.empty()) {
++                    // (Starling) A zero-width placeholder (a floating shape's
++                    // anchor) never overflows: only the spaces ending the words
++                    // before it are over the width, and they hang. It stays on
++                    // the line with the spaces after it, as Word keeps an
++                    // anchor: lab charanchor case 5, "before [A] after" beside a
++                    // shape, set "after" 2.4 pt right (a space) when the anchor
++                    // led the next piece.
++                    fWords.extend(cluster);
++                    continue;
++                }
+                 if (!fClusters.empty()) {
+                     // Placeholder ends the previous word
+                     fMinIntrinsicWidth = std::max(fMinIntrinsicWidth, this->getClustersTrimmedWidth());
