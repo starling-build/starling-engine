@@ -14,6 +14,7 @@
 #include <unordered_map>
 
 #include "flutter/display_list/display_list.h"
+#include "flutter/display_list/effects/color_sources/dl_image_color_source.h"
 #include "flutter/display_list/image/dl_image.h"
 #include "flutter/display_list/skia/dl_sk_dispatcher.h"
 #include "third_party/skia/include/core/SkCanvas.h"
@@ -30,8 +31,9 @@ namespace {
 
 // A picture the browser decoded is a texture in the surface's GL context,
 // and the PDF backend, which has no GPU, would write it as nothing. Each
-// such image is swapped for a raster copy on its way to the page.
-// TODO(starling): an image inside a shader (a tiled fill) is not reached.
+// such image is swapped for a raster copy on its way to the page, and so is
+// one inside an image shader (a tiled picture fill), which would otherwise
+// come out black.
 class PdfDispatcher : public DlSkCanvasDispatcher {
  public:
   // `copies` outlives the pages: a logo on every slide is copied once.
@@ -55,6 +57,24 @@ class PdfDispatcher : public DlSkCanvasDispatcher {
                      DlSrcRectConstraint constraint) override {
     DlSkCanvasDispatcher::drawImageRect(raster(image), src, dst, sampling,
                                         render_with_attributes, constraint);
+  }
+
+  void setColorSource(const DlColorSource* source) override {
+    const DlImageColorSource* image_source = source ? source->asImage() : nullptr;
+    if (image_source != nullptr) {
+      sk_sp<DlImage> image =
+          sk_ref_sp(const_cast<DlImage*>(image_source->image().get()));
+      sk_sp<DlImage> copy = raster(image);
+      if (copy != image) {
+        auto swapped = DlColorSource::MakeImage(
+            copy, image_source->horizontal_tile_mode(),
+            image_source->vertical_tile_mode(), image_source->sampling(),
+            image_source->matrix_ptr());
+        DlSkCanvasDispatcher::setColorSource(swapped.get());
+        return;
+      }
+    }
+    DlSkCanvasDispatcher::setColorSource(source);
   }
 
  private:
