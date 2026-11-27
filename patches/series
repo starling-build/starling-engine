@@ -35,3 +35,4 @@ skia-pdf-invisible-text.patch
 skia-fake-italic-third.patch
 skia-pdf-cff-cid.patch
 skia-zero-width-anchor-never-overflows.patch
+skia-justify-east-asian-wide.patch
